@@ -1,0 +1,46 @@
+# Example dsh loader entries for dsh-academic-research.
+#
+# Pick exactly ONE of the two deployment shapes below. Mounting both would
+# create two `ctx.compaction` engines that race for the same decision.
+
+# ── 部署形态 A（推荐）：在 agent preset 的 compaction realm 内替换后端 ───────
+#
+# Put this row where the deployment's compaction currently lives, replacing the
+# existing backend row rather than adding a second one. The surrounding group
+# must carry the `isolate` realm the preset already declares for `compaction`.
+#
+#   - id: academic-research
+#     name: 'dsh-academic-research'
+#     config:
+#       domain: ml
+#       summaryLanguage: auto
+#       recursive: true
+#       chunkMessages: 40
+#       thresholdRatio: 0.7
+#       retainRatio: 0.16
+#       maxTokens: 32768
+#       auto: true
+#
+# Pro-only keys such as `faithful` and `customInstruction` are ignored rather
+# than rejected: schemastery passes unknown keys through, this backend reads
+# only the keys it declares, and only the ten base policy keys reach the
+# inherited engine. Dropping them is optional.
+
+# ── 部署形态 B：host 平面直接挂载 ─────────────────────────────────────────
+#
+# Only when no agent preset owns a compaction backend. `compaction-basic` must
+# be disabled in the same composition, since both provide `ctx.compaction`.
+#
+#   - id: compaction-basic
+#     disabled: true
+#   - id: academic-research
+#     name: 'dsh-academic-research'
+#     config:
+#       domain: general
+#       summaryLanguage: auto
+#       recursive: true
+#       chunkMessages: 40
+#       thresholdRatio: 0.7
+#       retainRatio: 0.16
+#       maxTokens: 32768
+#       auto: true

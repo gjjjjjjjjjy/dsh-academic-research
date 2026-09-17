@@ -1,0 +1,30 @@
+# dsh bundle patch for dsh-academic-research (applied automatically on install).
+#
+# This backend registers on the SAME `ctx.compaction` service as the built-in
+# `dsh-compaction-basic`, so exactly one of them may be enabled per realm.
+# Disabling the built-in here is what makes the science backend the provider.
+#
+# PRESET DEPLOYMENTS (an agent preset owns its own compaction realm) must NOT
+# let this host-plane row start: the preset's engine and this one would both
+# hook `agent/pre-step` for every session and race for the same compaction
+# decision. Disable the inserted row in the profile's own cordis.patch.yml and
+# mount the backend inside the preset instead — see README "部署形态 A".
+- id: compaction-basic
+  disabled: true
+- insert:
+  - id: academic-research
+    name: 'dsh-academic-research'
+    config:
+      domain: general
+      summaryLanguage: auto
+      recursive: true
+      chunkMessages: 40
+      # Pressure must land inside the real input limit:
+      #   thresholdRatio x contextWindow < provider limit - maxTokens
+      # Calibrated for deepseek-flash:
+      #   0.7 x 1000000 = 700000 < 1048576 - 256000 = 792576
+      thresholdRatio: 0.7
+      retainRatio: 0.16
+      # A summary that hits this cap is rejected as truncated, never committed.
+      maxTokens: 32768
+      auto: true

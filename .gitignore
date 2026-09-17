@@ -1,0 +1,8 @@
+node_modules/
+lib/
+*.tsbuildinfo
+.npm-cache/
+.npm-logs/
+.DS_Store
+.localtest/
+*.tgz
