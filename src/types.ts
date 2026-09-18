@@ -136,3 +136,22 @@ export interface CarriedFragment {
   /** The verbatim preserved lines. */
   readonly lines: readonly string[];
 }
+
+/**
+ * A preserved fragment dropped because a later record replaced the value it
+ * holds. The lines are kept so the program can publish the eviction once: a
+ * dropped fragment that left no trace would be an unrecorded loss of preserved
+ * text (Schema §3).
+ */
+export interface EvictedFragment extends CarriedFragment {
+  /** The line key whose later value replaced this fragment's value. */
+  readonly key: string;
+}
+
+/** What the previous checkpoint contributes to this compaction. */
+export interface CarriedOutcome {
+  /** Fragments carried verbatim, in recorded order. */
+  readonly kept: readonly CarriedFragment[];
+  /** Superseded fragments, in recorded order, for the eviction trace. */
+  readonly evicted: readonly EvictedFragment[];
+}

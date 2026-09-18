@@ -21,11 +21,12 @@ import {
   buildSourceIndex,
   CARRIED_SOURCE,
   extractCarriedFragments,
+  extractCarriedOutcome,
   parseRefs,
   renderUnits,
 } from '../src/sources.ts';
 import { summarizeRegion } from '../src/summarize.ts';
-import type { ResolvedAcademicResearchConfig, SummarizationInput } from '../src/types.ts';
+import type { ResolvedAcademicResearchConfig, SourceIndex, SummarizationInput } from '../src/types.ts';
 import {
   DECISION_KEYS,
   DECISION_STATES,
@@ -473,6 +474,139 @@ describe('dsh-academic-research', () => {
     /* 子串包含会把 seed=42 判成「已携带」而静默丢弃，且被丢弃的引用不进 resolved，
        V2 也就查不到它。按行边界判等价后，新值必须作为本轮定位出现在摘要里。 */
     expect(text).toContain('（本次压缩定位）\n原文：\nseed=42');
+  });
+
+  it('携带片段的值被更晚的记录取代时淘汰，并留痕一次', async () => {
+    /* 真实检查点里同时躺着 Tests 31 / 33 / 34，读者无从判断哪个是当前值；
+       而携带集合只增不减，过期事实会被永久搬运。 */
+    const prior = [
+      '<compacted-summary>',
+      '## [invariants] 精确保留区',
+      '来源：S1:L1（本次压缩定位）',
+      '原文：',
+      'Tests  31 passed (31)',
+      '</compacted-summary>',
+    ].join('\n');
+    const messages = [
+      createUserMessage({ content: [{ type: 'text', text: prior }], source: { kind: 'user' } }),
+      createUserMessage({
+        content: [{ type: 'text', text: 'Tests  34 passed (34)' }],
+        source: { kind: 'user' },
+      }),
+    ];
+
+    const outcome = extractCarriedOutcome(buildSourceIndex(messages));
+    expect(outcome.kept).toEqual([]);
+    expect(outcome.evicted).toEqual([
+      { source: 'S1:L1（本次压缩定位）', lines: ['Tests  31 passed (31)'], key: 'Tests' },
+    ]);
+
+    const { ctx } = fakeContext([replyWith('(none)')]);
+    const text = textOf(await summarizeRegion(ctx, BASE, ACADEMIC_RESEARCH, { messages }, AGENT));
+    /* 留痕：原文照旧逐字，标签说明为什么不再携带。 */
+    expect(text).toContain('来源：前次检查点（已淘汰 · Tests 已有更新值）\n原文：\nTests  31 passed (31)');
+    /* 淘汰不是继续携带，V2 也不再要求这一段出现。 */
+    expect(text).not.toContain(`${CARRIED_SOURCE}\n原文：\nTests  31 passed (31)`);
+  });
+
+  it('淘汰判据只认更晚的记录，同值与数字扩展都不算取代', () => {
+    const withPrior = (preserved: string, later: readonly string[]): SourceIndex =>
+      buildSourceIndex([
+        createUserMessage({ content: [{ type: 'text', text: 'maxTokens: 32768' }], source: { kind: 'user' } }),
+        createUserMessage({
+          content: [{
+            type: 'text',
+            text: ['<compacted-summary>', '## [invariants] 精确保留区', '来源：S1:L1（本次压缩定位）', '原文：', preserved, '</compacted-summary>'].join('\n'),
+          }],
+          source: { kind: 'user' },
+        }),
+        ...later.map((text) => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })),
+      ]);
+
+    /* 写在前次检查点之前的旧值不是更新：那是更早的记录，不是取代。 */
+    expect(extractCarriedOutcome(withPrior('maxTokens: 32768', [])).kept).toHaveLength(1);
+    /* 同样的值再次出现，说明它仍然成立。 */
+    expect(extractCarriedOutcome(withPrior('maxTokens: 65536', ['maxTokens: 65536'])).kept).toHaveLength(1);
+    /* 数字扩展是两个不同的值，不是同一个槽的新值（Schema §4.1 的 seed=42/421）。 */
+    expect(extractCarriedOutcome(withPrior('seed=42', ['seed=421'])).kept).toHaveLength(1);
+    /* 真的换了值才淘汰。 */
+    expect(extractCarriedOutcome(withPrior('maxTokens: 32768', ['maxTokens: 65536'])).evicted).toHaveLength(1);
+  });
+
+  it('携带片段里还有非键行时，不因其中一行被取代而整体淘汰', () => {
+    const prior = [
+      '<compacted-summary>',
+      '## [invariants] 精确保留区',
+      '来源：S1:L1-L3（本次压缩定位）',
+      '原文：',
+      'accuracy=81.3%',
+      'E3 使用 test-v2 进行评价。',
+      '</compacted-summary>',
+    ].join('\n');
+    const messages = [
+      createUserMessage({ content: [{ type: 'text', text: prior }], source: { kind: 'user' } }),
+      createUserMessage({
+        content: [{ type: 'text', text: 'accuracy=90.0%' }],
+        source: { kind: 'user' },
+      }),
+    ];
+
+    /* 淘汰只能整块进行：逐行改写会毁掉「逐字保留」本身。整块里还有一行不是键值时，
+       判据不足以证明整块都过期，因此保留。 */
+    const outcome = extractCarriedOutcome(buildSourceIndex(messages));
+    expect(outcome.evicted).toEqual([]);
+    expect(outcome.kept).toEqual([
+      { source: 'S1:L1-L3（本次压缩定位）', lines: ['accuracy=81.3%', 'E3 使用 test-v2 进行评价。'] },
+    ]);
+  });
+
+  it('被引用的代码行不算键值对，不因同名标识符出现在别处而淘汰', () => {
+    const withPrior = (preserved: string, later: string): SourceIndex =>
+      buildSourceIndex([
+        createUserMessage({
+          content: [{
+            type: 'text',
+            text: ['<compacted-summary>', '## [invariants] 精确保留区', '来源：S1:L1（本次压缩定位）', '原文：', preserved, '</compacted-summary>'].join('\n'),
+          }],
+          source: { kind: 'user' },
+        }),
+        createUserMessage({ content: [{ type: 'text', text: later }], source: { kind: 'user' } }),
+      ]);
+
+    /* 真实检查点里保留过源码片段。`maxTokens: config.maxTokens,` 后面还有逗号，
+       `return 0;` 的数字后面只有分号：两者都不是「一个可替换的值」，因此不参与淘汰。 */
+    const code = extractCarriedOutcome(
+      withPrior('\t\tmaxTokens: config.maxTokens,', '\t\tmaxTokens: config.maxTokens ?? 8192,'),
+    );
+    expect(code.kept).toHaveLength(1);
+    expect(code.evicted).toHaveLength(0);
+
+    expect(extractCarriedOutcome(withPrior('\treturn 0;', '\treturn 1;')).evicted).toHaveLength(0);
+  });
+
+  it('淘汰留痕只公示一轮，下一轮不再作为必保集合', async () => {
+    const prior = [
+      '<compacted-summary>',
+      '## [invariants] 精确保留区',
+      '来源：前次检查点（已淘汰 · Tests 已有更新值）',
+      '原文：',
+      'Tests  31 passed (31)',
+      '</compacted-summary>',
+    ].join('\n');
+    const messages = [
+      createUserMessage({ content: [{ type: 'text', text: prior }], source: { kind: 'user' } }),
+    ];
+
+    const outcome = extractCarriedOutcome(buildSourceIndex(messages));
+    expect(outcome.kept).toEqual([]);
+    expect(outcome.evicted).toEqual([]);
+
+    const { ctx } = fakeContext([replyWith('(none)')]);
+    const text = textOf(await summarizeRegion(ctx, BASE, ACADEMIC_RESEARCH, { messages }, AGENT));
+    /* 留痕本身不被搬运：下一轮的保留区里只剩 (none)，不是上一轮的淘汰公示。 */
+    expect(text).toContain('(none)');
+    expect(text).not.toContain('已淘汰');
+    expect(text).not.toContain('Tests  31 passed (31)');
   });
 
   it('已携带片段的子区间引用仍算已携带，不重复搬运', async () => {

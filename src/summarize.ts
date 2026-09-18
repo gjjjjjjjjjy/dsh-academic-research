@@ -26,7 +26,8 @@ import {
 import {
   buildSourceIndex,
   CARRIED_SOURCE,
-  extractCarriedFragments,
+  evictionLabel,
+  extractCarriedOutcome,
   isSubsumed,
   parseRefs,
   refLabel,
@@ -44,6 +45,7 @@ import {
 } from './validate.ts';
 import type {
   CarriedFragment,
+  CarriedOutcome,
   ResolvedRef,
   ResolvedAcademicResearchConfig,
   SourceIndex,
@@ -207,10 +209,9 @@ function resolveTarget(agent: Agent, base: ResolvedConfig): { provider: string; 
   return { provider: target.provider, model: target.model };
 }
 
-/** Build the final preserved section from carried fragments and this compaction's citations. */
 /**
- * Build the final preserved section: carried fragments first, then this
- * compaction's citations.
+ * Build the final preserved section: carried fragments first, then the eviction
+ * trace, then this compaction's citations.
  *
  * Carried fragments are labelled with {@link CARRIED_SOURCE}, never with the
  * label read back from the previous checkpoint. That label was a
@@ -218,14 +219,22 @@ function resolveTarget(agent: Agent, base: ResolvedConfig): { provider: string; 
  * outside their own compaction; echoing it would both misreport a carried
  * fragment as newly located this round, and nest one wrapper inside the next on
  * every subsequent compaction.
+ *
+ * An evicted fragment is published here once, with its original text intact and
+ * the key whose later value replaced it. Dropping it without a trace would be an
+ * unrecorded loss of preserved text; the next compaction reads this block,
+ * recognises the label and does not carry it on (Schema §3).
  */
 function buildInvariantBody(
-  carried: readonly CarriedFragment[],
+  carry: CarriedOutcome,
   resolved: readonly ResolvedRef[],
 ): string[] {
   const lines: string[] = [];
-  for (const fragment of carried) {
+  for (const fragment of carry.kept) {
     lines.push(renderInvariantBlock(CARRIED_SOURCE, fragment.lines), '');
+  }
+  for (const fragment of carry.evicted) {
+    lines.push(renderInvariantBlock(evictionLabel(fragment.key), fragment.lines), '');
   }
   for (const ref of resolved) {
     lines.push(
@@ -336,7 +345,7 @@ class Runner {
 function assembleCitations(
   draft: string,
   index: SourceIndex,
-  carried: readonly CarriedFragment[],
+  carry: CarriedOutcome,
 ): { readonly text: string; readonly resolved: readonly ResolvedRef[]; readonly problems: readonly string[] } {
   const parsed = parseSections(draft);
   if (!parsed.sections.some((section) => section.key === 'invariants')) {
@@ -356,12 +365,12 @@ function assembleCitations(
       problems.push(outcome.problem);
       continue;
     }
-    if (isSubsumed(outcome.resolved, carried)) continue;
+    if (isSubsumed(outcome.resolved, carry.kept)) continue;
     resolved.push(outcome.resolved);
   }
 
   return {
-    text: replaceSection(draft, 'invariants', buildInvariantBody(carried, resolved)),
+    text: replaceSection(draft, 'invariants', buildInvariantBody(carry, resolved)),
     resolved,
     problems,
   };
@@ -406,21 +415,21 @@ async function singlePass(
   runner: Runner,
   academicResearch: ResolvedAcademicResearchConfig,
   index: SourceIndex,
-  carried: readonly CarriedFragment[],
+  carry: CarriedOutcome,
 ): Promise<string> {
   const document = renderUnits(index);
   const instruction = buildInstruction(academicResearch);
 
-  const first = assembleCitations(await runner.ask(document, instruction), index, carried);
-  let problems = [...first.problems, ...audit(first.text, carried, first.resolved)];
+  const first = assembleCitations(await runner.ask(document, instruction), index, carry);
+  let problems = [...first.problems, ...audit(first.text, carry.kept, first.resolved)];
   if (problems.length === 0) return first.text;
 
   const repaired = assembleCitations(
     await runner.ask(document, withRepair(instruction, withDraftNote(problems, first.text))),
     index,
-    carried,
+    carry,
   );
-  problems = [...repaired.problems, ...audit(repaired.text, carried, repaired.resolved)];
+  problems = [...repaired.problems, ...audit(repaired.text, carry.kept, repaired.resolved)];
   if (problems.length === 0) return repaired.text;
 
   throw new Error(
@@ -454,7 +463,7 @@ async function chunked(
   runner: Runner,
   academicResearch: ResolvedAcademicResearchConfig,
   index: SourceIndex,
-  carried: readonly CarriedFragment[],
+  carry: CarriedOutcome,
 ): Promise<string> {
   const partials: string[] = [];
   const resolved: ResolvedRef[] = [];
@@ -470,7 +479,7 @@ async function chunked(
         problems.push(outcome.problem);
         continue;
       }
-      if (isSubsumed(outcome.resolved, carried)) continue;
+      if (isSubsumed(outcome.resolved, carry.kept)) continue;
       if (resolved.some((existing) => existing.text === outcome.resolved.text)) continue;
       if (cited.some((existing) => existing.text === outcome.resolved.text)) continue;
       cited.push(outcome.resolved);
@@ -485,11 +494,11 @@ async function chunked(
     resolved.push(...cited);
   }
 
-  const body = buildInvariantBody(carried, resolved);
+  const body = buildInvariantBody(carry, resolved);
   const instruction = mergeInstruction(academicResearch, partials, body);
 
   const merged = replaceSection(await runner.ask('', instruction), 'invariants', body);
-  let failures = audit(merged, carried, resolved);
+  let failures = audit(merged, carry.kept, resolved);
   if (failures.length === 0) return merged;
 
   const remade = replaceSection(
@@ -497,7 +506,7 @@ async function chunked(
     'invariants',
     body,
   );
-  failures = audit(remade, carried, resolved);
+  failures = audit(remade, carry.kept, resolved);
   if (failures.length === 0) return remade;
 
   throw new Error(
@@ -532,14 +541,14 @@ export async function summarizeRegion(
   const region = input.messages.slice(cut);
 
   const index = buildSourceIndex(region);
-  const carried = extractCarriedFragments(index);
+  const carry = extractCarriedOutcome(index);
   const target = resolveTarget(agent, base);
   const runner = new Runner(ctx, base, agent, target, head, signal);
 
   const text =
     academicResearch.recursive && region.length > academicResearch.chunkMessages
-      ? await chunked(runner, academicResearch, index, carried)
-      : await singlePass(runner, academicResearch, index, carried);
+      ? await chunked(runner, academicResearch, index, carry)
+      : await singlePass(runner, academicResearch, index, carry);
 
   const summary: ContentBlock[] = [{ type: 'text', text }];
   const common = {

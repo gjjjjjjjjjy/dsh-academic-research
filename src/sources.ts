@@ -14,6 +14,8 @@
 import type { ContentBlock, Message } from '@deepseek-ai/dsh-llm';
 import type {
   CarriedFragment,
+  CarriedOutcome,
+  EvictedFragment,
   ResolveOutcome,
   SourceBlock,
   SourceIndex,
@@ -26,6 +28,23 @@ const MARKER = '-- ';
 
 /** Label recorded on fragments carried forward from the previous checkpoint. */
 export const CARRIED_SOURCE = '前次检查点（继续携带）';
+
+/**
+ * Label prefix of the eviction trace the program writes for a fragment it
+ * dropped. It is written once, in the compaction that drops the fragment; the
+ * next compaction reads it back and ignores it rather than carrying it on.
+ */
+export const EVICTED_SOURCE = '前次检查点（已淘汰';
+
+/**
+ * The label of one eviction trace block.
+ *
+ * @param key - the line key whose later value superseded the fragment.
+ * @returns the recorded label.
+ */
+export function evictionLabel(key: string): string {
+  return `${EVICTED_SOURCE} · ${key} 已有更新值）`;
+}
 
 /** Opening tag of a checkpoint written by any compaction backend. */
 const SUMMARY_OPEN = '<compacted-summary>';
@@ -284,6 +303,115 @@ function withoutBlockSeparator(lines: readonly string[]): readonly string[] {
   return last !== undefined && last.trim().length === 0 ? lines.slice(0, -1) : lines;
 }
 
+/** One line's replaceable value: a name-like key and the value recorded under it. */
+interface KeyedLine {
+  readonly key: string;
+  readonly value: string;
+}
+
+/** `<key>=<scalar>` / `<key>: <scalar>` — an assignment or a labelled scalar. */
+const ASSIGNED_VALUE = /^([A-Za-z_][A-Za-z0-9_.]*)\s*[=:：]\s*(\S{1,64})$/;
+
+/** A scalar value: one run with no code or list punctuation in it. */
+const SCALAR_VALUE = /^[^\s,;()\[\]{}'"]+$/;
+
+/** `<key> <number> <rest>` — a counted or measured value, e.g. `Tests  31 passed`. */
+const COUNTED_VALUE = /^([A-Za-z_][A-Za-z0-9_.]*)\s+(-?\d[\d,_]*(?:\.\d+)?%?)(?=\s|$)(.*)$/;
+
+/**
+ * Read a line's key and value, or null when the line records no single value.
+ *
+ * Deliberately narrow, and narrower than "looks like `key: value`". It must not
+ * fire on a quoted code line — a real checkpoint preserves `maxTokens:
+ * config.maxTokens,` and `return 0;` from source excerpts, and those are not
+ * settings whose later value replaces them:
+ *
+ * - a value must be one scalar run with no `,;()[]{}'"` in it, so
+ *   `maxTokens: config.maxTokens,` is unkeyed;
+ * - a counted line needs the number to be followed by a word or nothing, so
+ *   `return 0;` is unkeyed;
+ * - `dsh-academic-research: 摘要未通过…` (spaces in the value), `call 1: …`
+ *   (a `:` after the counted number), `raw     : [{...}]` (JSON) and
+ *   `M README.md` (no separator, not a number) are unkeyed as well;
+ * - multi-word values (`baseline: resnet50 on split-A`) are unkeyed: an update
+ *   to one is not mechanically recognisable, and guessing would drop text that
+ *   may still hold.
+ *
+ * @param line - one line of a preserved fragment or of a later record.
+ * @returns the line's key and value, or null when it has none.
+ */
+function keyedLine(line: string): KeyedLine | null {
+  const text = line.trim();
+  if (text.length === 0) return null;
+  const assigned = ASSIGNED_VALUE.exec(text);
+  if (assigned !== null) {
+    return SCALAR_VALUE.test(assigned[2]!) ? { key: assigned[1]!, value: assigned[2]! } : null;
+  }
+  const counted = COUNTED_VALUE.exec(text);
+  if (counted === null) return null;
+  const rest = counted[3]!.trim();
+  if (rest.length > 0 && !/^\p{L}/u.test(rest)) return null;
+  return { key: counted[1]!, value: `${counted[2]!} ${rest}`.trim() };
+}
+
+/**
+ * True when two recorded values are numbers and one merely spells out more
+ * digits of the other.
+ *
+ * `seed=421` and `seed=42` are two recorded seeds, not a newer value of one
+ * setting — Schema §4.1 uses exactly that pair to require both to survive. A
+ * longer number that extends a shorter one is therefore read as a different
+ * value, so the fragment stays; the cost is a missed eviction (`steps=42` →
+ * `steps=421`) in exchange for never dropping a record that is still valid.
+ *
+ * @param earlier - the value recorded in the preserved fragment.
+ * @param later - the value recorded after the checkpoint.
+ * @returns true when the two differ only by extra digits.
+ */
+function extendsDigits(earlier: string, later: string): boolean {
+  const pureNumber = /^-?\d+(?:\.\d+)?%?$/;
+  const a = earlier.replace(/[,_]/g, '');
+  const b = later.replace(/[,_]/g, '');
+  if (!pureNumber.test(a) || !pureNumber.test(b)) return false;
+  return a.startsWith(b) || b.startsWith(a);
+}
+
+/**
+ * Say whether a fragment has been replaced, and by which key.
+ *
+ * Only records **after** the checkpoint count: a value written earlier is the
+ * older one, not an update. A fragment qualifies only when every one of its
+ * lines is a keyed line and every one of those keys has a later value that
+ * differs from the fragment's — the whole fragment is stale, not part of it.
+ * That is what keeps the rule from dropping mixed blocks (a log excerpt with
+ * prose in it) and from rewriting a fragment line by line, which would stop it
+ * being the verbatim text the checkpoint promised to preserve.
+ *
+ * @param fragment - the preserved lines, exactly as recorded.
+ * @param later - every region line after the previous checkpoint.
+ * @returns the superseding key, or undefined when the fragment is still current.
+ */
+function supersededBy(
+  fragment: readonly string[],
+  later: readonly string[],
+): KeyedLine | undefined {
+  const keys = fragment.map(keyedLine);
+  if (keys.length === 0 || keys.some((keyed) => keyed === null)) return undefined;
+  let superseding: KeyedLine | undefined;
+  for (const keyed of keys as readonly KeyedLine[]) {
+    let latest: string | undefined;
+    for (const line of later) {
+      const other = keyedLine(line);
+      if (other !== null && other.key === keyed.key) latest = other.value;
+    }
+    /* A key that disappears later is not an update: the record was not replaced. */
+    if (latest === undefined || latest === keyed.value) return undefined;
+    if (extendsDigits(keyed.value, latest)) return undefined;
+    superseding ??= { key: keyed.key, value: latest };
+  }
+  return superseding;
+}
+
 /**
  * Read the previous checkpoint's preserved fragments out of the region.
  *
@@ -293,17 +421,23 @@ function withoutBlockSeparator(lines: readonly string[]): readonly string[] {
  * model noticing them. What is carried is the recorded text itself, blank lines
  * included; a fragment that preserves nothing but blank lines is dropped.
  *
+ * A fragment whose value a later record replaced is **not** carried: keeping
+ * `Tests  31 passed (31)` next to `Tests  34 passed (34)` leaves the reader to
+ * guess which number is current, and the carry set otherwise only grows. The
+ * decision is mechanical ({@link supersededBy}) and never silent — evicted
+ * fragments come back in `evicted` so the compaction can publish them once.
+ *
  * @param index - the region's source index.
- * @returns the preserved fragments in recorded order, empty when none.
+ * @returns the carried fragments and the ones dropped as superseded.
  */
-export function extractCarriedFragments(index: SourceIndex): readonly CarriedFragment[] {
+export function extractCarriedOutcome(index: SourceIndex): CarriedOutcome {
   const lines = index.flatMap((unit) => unit.lines);
   const open = lines.lastIndexOf(SUMMARY_OPEN);
-  if (open < 0) return [];
+  if (open < 0) return { kept: [], evicted: [] };
   const close = lines.indexOf(SUMMARY_CLOSE, open + 1);
   const end = close < 0 ? lines.length : close;
   const heading = lastIndexOfPattern(lines, INVARIANT_HEADING, open, end);
-  if (heading < 0) return [];
+  if (heading < 0) return { kept: [], evicted: [] };
   const nextHeading = firstIndexOfPattern(lines, ANY_HEADING, heading + 1, end);
   const stop = nextHeading < 0 ? end : nextHeading;
 
@@ -323,9 +457,33 @@ export function extractCarriedFragments(index: SourceIndex): readonly CarriedFra
     if (label !== null) body.push(line);
   }
   if (label !== null) fragments.push({ source: label, lines: body });
-  return fragments
+
+  const readable = fragments
     .map((fragment) => ({ source: fragment.source, lines: withoutBlockSeparator(fragment.lines) }))
     .filter((fragment) => fragment.lines.some((line) => line.trim().length > 0));
+
+  const later = lines.slice(end);
+  const kept: CarriedFragment[] = [];
+  const evicted: EvictedFragment[] = [];
+  for (const fragment of readable) {
+    /* The program's own eviction trace is published once, then dropped here
+       instead of being carried on as if it were preserved source text. */
+    if (fragment.source.startsWith(EVICTED_SOURCE)) continue;
+    const superseding = supersededBy(fragment.lines, later);
+    if (superseding === undefined) kept.push(fragment);
+    else evicted.push({ ...fragment, key: superseding.key });
+  }
+  return { kept, evicted };
+}
+
+/**
+ * The fragments the next compaction must carry, in recorded order.
+ *
+ * @param index - the region's source index.
+ * @returns the fragments still current, empty when there are none.
+ */
+export function extractCarriedFragments(index: SourceIndex): readonly CarriedFragment[] {
+  return extractCarriedOutcome(index).kept;
 }
 
 /** Render one `来源：`/`原文：` block for the final preserved section. */
