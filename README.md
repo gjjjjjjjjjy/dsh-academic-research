@@ -15,7 +15,7 @@
 | | |
 |---|---|
 | **版本 0 已实现** | `ctx.compaction` 后端：六节科研交接记录、`[goal]` 的 `mainline:`/`progress:` 汇报字段、实验台账七字段、来源引用逐字复制、V1–V4 校验 + 一次修复、`general` / `ml` / `optics` 三个领域包。`[analysis]` 的 `decision:` 条目带 `state:`（`建议 / 已确认 / 已实现 / 已验证 / 已否认`）与 `basis:`，由 V1 校验格式 |
-| **随包附带，但不是功能入口** | `research-workflow` 技能（四种场景 + 决策包与实施卡两个模板）——**纯提示模板**，没有对应的斜杠命令或工具入口 |
+| **随包附带，但不是功能入口** | `research-workflow` 技能（四种场景 + 决策包与实施卡两个模板）：由 `academic-research` 预设随包挂载（`presets/academic-research/skills/`），但**它是提示模板，不是功能入口**——没有对应的斜杠命令或工具 |
 | **尚未实现** | 工作流的可调用入口；文献检索与引用溯源、附件（PDF 等）解析、实验设计与统计检查、可复现性核对、跨会话科研记忆等科研工具。**本包当前不提供任何 `research_*` 之类的科研工具** |
 
 **版本 0 与同概念区其它包的区别只有一条：只做压缩后端 + 附带的提示模板，不做科研工具。**
@@ -26,24 +26,26 @@
 ## `research-workflow` 技能
 
 四种场景（研究梳理 / 实验设计 / 科研实现 / 实验复盘）与两种交接物（决策包 / 实施卡），
-位于 [`skills/research-workflow/`](skills/research-workflow/SKILL.md)。**它是提示模板，不是运行时**：
-不注册命令、不新增服务、不碰压缩引擎，产出直接进入既有六节，不建第二套台账。
+位于 [`presets/academic-research/skills/research-workflow/`](presets/academic-research/skills/research-workflow/SKILL.md)。
+**它是提示模板，不是运行时**：不注册命令、不新增服务、不碰压缩引擎，产出直接进入既有六节，不建第二套台账。
 
-技能不会因为装了包就自动可用，必须让 `skill-filesystem` 看到它。两种挂法：
+> 这四种**场景**与 [`docs/SUMMARY-SCHEMA.md`](docs/SUMMARY-SCHEMA.md) §0.1 的四种**工作方式**
+> （研究整理 / 研究评议 / 实施推进 / 恢复与交接）是两套并存的叫法，不改名、不合并；
+> 逐条对应关系见 [`SKILL.md` §零](presets/academic-research/skills/research-workflow/SKILL.md)。
 
-```yaml
-# 挂法 1（推荐）：把本包的 skills 目录加成自定义技能根，
-# 加在 preset 里已有的 skill-filesystem 行上
-- id: skill-filesystem
-  name: '@deepseek-ai/dsh-skill-filesystem'
-  config:
-    customSkillDirs:
-      - /绝对路径/dsh-academic-research/skills
-```
+**技能随预设一起走，装预设就等于装上它。** `academic-research` 预设的 `skill-filesystem` 行用
+`baseUrl`（预设自己的目录）挂载同目录下的 `skills/`，所以两种装法都带技能，不需要额外的挂载步骤；
+这与 dsh 自带 `cordis` 预设挂自己技能的做法一致：
+
+- **挂法 A（拷贝）**：`cp -R <包>/presets/academic-research ~/.dsh/.agent-presets/` 会把 `skills/` 一起拷过去。
+- **挂法 B（注册包内 presets 目录）**：直接从包内读取，`skills/` 本来就在预设目录旁边。
+
+要让**别的预设**（例如 `standard-pro`）也能用到它，再把它软链进用户技能根
+（`skill-filesystem` 默认扫描 `<dshHome>/skills`，对所有预设与项目生效；该根被 watch，
+**加完当前会话下一轮就能看到，不需要重启**）：
 
 ```bash
-# 挂法 2：软链进用户技能根（项目根也认 .dsh/skills 与 .agents/skills）
-ln -s /绝对路径/dsh-academic-research/skills/research-workflow ~/.dsh/skills/research-workflow
+ln -s <包>/presets/academic-research/skills/research-workflow ~/.dsh/skills/research-workflow
 ```
 
 > 技能里写的「不要擅自跑昂贵实验」**只是行为指令，不是权限隔离**；运行权限仍走宿主的工具与审批管线。
@@ -187,11 +189,11 @@ checkpoint=/project/results/E3.pt
       config:
         domain: ml
         summaryLanguage: auto
-        recursive: true
-        chunkMessages: 40
+        recursive: false
+        chunkMessages: 160
         thresholdRatio: 0.7
         retainRatio: 0.16
-        maxTokens: 32768
+        maxTokens: 65536
         auto: true
 ```
 
@@ -221,7 +223,7 @@ checkpoint=/project/results/E3.pt
     domain: general
     thresholdRatio: 0.7
     retainRatio: 0.16
-    maxTokens: 32768
+    maxTokens: 65536
 ```
 
 ### 装包
@@ -247,11 +249,12 @@ dsh plugin --profile <profile> add /绝对路径/dsh-academic-research
 ### 自带 agent 预设
 
 包里带一个装完即可在设置里选用的预设：`academic-research`，显示名「科研模式」。它等于内置
-`standard` 的整份 assembly，只把压缩后端换成 `dsh-academic-research`（领域包 `ml`）。这是
+`standard` 的整份 assembly，改动只有两处：压缩后端换成 `dsh-academic-research`（领域包 `ml`），
+`skill-filesystem` 行挂上预设自带的 `skills/`（`research-workflow`，见上文）。这是
 `dsh-agent-presets` 认可的 shipped 变体做法（`cordis`、`code` 也这么做），**代价是它不随
 dsh 升级自动更新**——升级 dsh 后要重新生成 `presets/academic-research/agent.cordis.yml`。
 
-预设是**目录**，不是单文件：`agent.cordis.yml` + `preset.yml`。两种装法：
+预设是**目录**，不是单文件：`agent.cordis.yml` + `preset.yml` + `skills/`。两种装法：
 
 **A. 放进用户预设目录（推荐：不改任何配置，不需要重启）**
 
@@ -294,12 +297,12 @@ cp -R <包>/presets/academic-research ~/.dsh/.agent-presets/
 |---|---|---|
 | `domain` | `general` | `general` / `ml` / `optics` |
 | `summaryLanguage` | `auto` | `en` / `zh` / `auto`；`auto` 跟随用户自然语言，避免被英文代码和日志带偏 |
-| `recursive` | `true` | 大区段先分块摘要再合并 |
-| `chunkMessages` | `40` | 分块时每块的消息数 |
+| `recursive` | `true` | 大区段先分块摘要再合并。**实测代价很大，本仓所有部署片段都关掉它**，见下 |
+| `chunkMessages` | `40` | 分块时每块的消息数（只在 `recursive` 打开时有意义） |
 | `domainExtra` | `''` | 追加到领域包的保留提示（只追加） |
 | `thresholdRatio` | 继承官方 | 触发压缩的上下文窗口比例 |
 | `retainRatio` / `retainTokens` | 继承官方 | 保留窗口（二者互斥） |
-| `maxTokens` | **必填**（未设或 <32768 在启动时抛错） | 摘要输出上限。本后端的六节摘要需要 ≥32768，见下 |
+| `maxTokens` | **必填**（未设或 <32768 在启动时抛错） | 摘要输出上限。下限 32768，本仓部署片段用 65536，见下 |
 | `summarizationProvider` / `summarizationModel` | `''` | 留空则复用会话路由模型 |
 | `compactionRetries` / `maxOverflowRetries` | 继承官方 | 压力与溢出重试 |
 | `modelPolicies` | — | 逐 provider/model 覆盖 |
@@ -309,7 +312,12 @@ cp -R <包>/presets/academic-research ~/.dsh/.agent-presets/
 
 > ⚠️ **`maxTokens` 不要留默认的 8192。** 六节摘要比官方模板长得多；实测 8192 下压缩
 > **9/9 全部失败**，错误是 `summarization truncated at the token cap (incomplete checkpoint)`——
-> 被 V4 正确拦下，但那段时间里会话**完全没有压缩**。本仓所有部署片段都写 32768。
+> 被 V4 正确拦下，但那段时间里会话**完全没有压缩**。本仓部署片段用 **65536**。
+>
+> **这个预算要和 reasoning 分。** 离线用真实模型复现一次 `input=142769` 的压缩：`out=24273` 里
+> **20344 是 reasoning**，正文只占约 4k。reasoning 一旦顶满上限，正文**就是空的**（实测同型：
+> `reasoning=32698/32768`、`content` 为空、`finish_reason=length`）。65536 给正文留出余量，
+> 且不会因为用不满而多花钱——生成到 `stop` 就停。
 >
 > 这一项**在构造时强制**：`maxTokens` 未设置、或顶层与 `modelPolicies` 里的值低于 32768，
 > 插件会直接抛错而不启动。理由同上——继承基础引擎的 8192 是一个已知必坏的默认值，
@@ -317,11 +325,22 @@ cp -R <包>/presets/academic-research ~/.dsh/.agent-presets/
 
 ---
 
-## 递归分块
+## 递归分块（默认关掉）
 
 区段超过 `chunkMessages` 时，先按块产出分段摘要，每块**各自给出自己那些来源的引用**；
 程序按本次编号逐块解析成原文，再把「已解析的原文」交给合并阶段，而不是只传一层模型转述。
 合并阶段的精确保留区同样由程序写入。
+
+> ⚠️ **默认部署把它关掉（`recursive: false`）。** 递归分块把一次压缩变成 **N+1 次完整模型
+> 调用**——每块一次、合并再一次，每次实测约 2 分钟；一次真实 `/compact` 因此在
+> `chunkMessages: 40`（179 条消息 → 4–5 块）下跑了 **593 秒**才失败。区段本身有
+> `thresholdRatio` 兜底（`≤ 0.7 × contextWindow = 700000`，落在 `1048576 − maxTokens`
+> 之内），官方 `compaction-basic` 也从不分块。
+>
+> 真要打开时**别用默认的 40**：每块都是一整次模型调用，`chunkMessages` 直接乘在耗时上。
+>
+> 分块阶段还有一个已知行为：某一块的引用不合法就**立即**失败，不会把剩下的块跑完
+> （无法解析出必保原文就没有可提交的检查点；后面几次调用改变不了结果）。
 
 ---
 
@@ -347,9 +366,12 @@ cp -R <包>/presets/academic-research ~/.dsh/.agent-presets/
 - **保留区跨压缩单调增长。** 前次检查点的保留片段被无条件继续携带，只增不减。当摘要预算不足以
   容纳时，基础引擎的「摘要必须小于被压区段」检查会**报错并拒绝提交**，不会静默删除已保留的原文。
   **处置**：这是 Schema §3 规定的行为；超长会话最终由人工决定淘汰哪些片段，插件内不自动淘汰。
-- **被压区段不复用前缀缓存。** 为保证可引用性，区段以带编号的纯文本送入压缩调用，而非原始消息
-  序列，因此这一段不进入前缀缓存；`system` 头与 `tools` 仍按原样传递，那部分前缀照常命中。
-  **处置**：压缩调用本身低频，这是为保真付出的代价。真实会话实测摘要调用 `cacheReadTokens=6912`。
+- **被压区段不复用前缀缓存，工具 schema 也不再转发。** 为保证可引用性，区段以带编号的纯文本
+  送入压缩调用，而非原始消息序列，因此这一段不进入前缀缓存；`system` 头仍按原样传递，那部分
+  前缀照常命中。**`tools` 不转发**：基础引擎传它是为了对齐前缀，但压缩模型没有任何正当工具可调，
+  把 schema 递过去等于给它机会跑偏——一次真实 `/compact` 就是这样在 13 秒后以
+  `summarization ended in a tool call` 失败。**处置**：压缩调用本身低频，这是为保真与确定性
+  付出的代价。真实会话实测摘要调用 `cacheReadTokens=6912`。
 
 ### 与宿主组件的交互
 
@@ -370,9 +392,10 @@ cp -R <包>/presets/academic-research ~/.dsh/.agent-presets/
   这两个类型，只依赖 `dsh-llm` 的根导出。**处置**：宿主升级后重新核对镜像。
 - **存在 API 漂移。** 已装的 `0.1.5-rc.2` 契约中 `SummarizationInput` **没有** `system` 字段
   （system 头是 `messages[0]`）；按 `0.1.0-rc.6` 旧契约写的镜像带 `system`，对当前运行时不成立。
-- **自带预设是内置 `standard` 的整份拷贝。** 这是 `dsh-agent-presets` 认可的 shipped 变体做法，
-  代价是**不随 dsh 升级自动更新**。**处置**：升级 dsh 后重新生成
-  `presets/academic-research/agent.cordis.yml`。
+- **自带预设是内置 `standard` 的整份拷贝**（另加压缩后端与 `skills/` 两处改动）。这是
+  `dsh-agent-presets` 认可的 shipped 变体做法，代价是**不随 dsh 升级自动更新**。**处置**：升级 dsh 后
+  重新生成 `presets/academic-research/agent.cordis.yml`，别丢掉 `skill-filesystem` 行的
+  `customSkillDirs` 与同目录的 `skills/`。
 
 ---
 
@@ -385,7 +408,7 @@ cp -R <包>/presets/academic-research ~/.dsh/.agent-presets/
 ```bash
 npm install          # 含 .npmrc：legacy-peer-deps，跳过重型 peer 解析
 npm run typecheck    # tsc -p tsconfig.test.json（含 src 与 test）
-npm test             # vitest run —— 单文件最小测试，18 个用例
+npm test             # vitest run —— 单文件最小测试，34 个用例
 npm run build        # 产出 lib/
 ```
 

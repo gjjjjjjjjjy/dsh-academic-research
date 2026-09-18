@@ -81,8 +81,18 @@
 # `skill-filesystem` contributes local-root discovery for agents on this preset, and
 # `tool-skill` gives them the catalog and loader; the merged catalog also
 # carries whatever the deployment registered globally (repository plugins).
+#
+# `research-workflow` travels WITH this preset (`skills/` next to this file) rather
+# than living in the user's skill root: it is the workflow of THIS composition, and a
+# preset is the unit that gets copied and edited — copy and package-root installs then
+# carry the skill either way. `baseUrl` is the preset's own directory, so the root
+# resolves wherever the preset is installed. Same row shape as the shipped
+# `cordis` preset's own skills.
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    customSkillDirs:
+      - !!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/', baseUrl))"
 
 - id: tool-skill
   name: '@deepseek-ai/dsh-tool-skill'
@@ -147,19 +157,27 @@
       config:
         # 领域包：general | ml | optics
         domain: ml
-        recursive: true
+        # 一次调用，不分块。递归分块会把一次压缩变成 N+1 次完整模型调用（每块一次、
+        # 合并再一次），每次实测约 2 分钟：一次真实 /compact 因此跑成 593 秒。
+        # 区段本身有 thresholdRatio 兜底（<= 0.7 x contextWindow = 700000，落在
+        # provider 输入上限 1048576 - maxTokens 之内），官方 compaction-basic 也从不分块。
+        recursive: false
         summaryLanguage: auto
         # 压力阈值必须落在真实输入上限之内：
         #   thresholdRatio x contextWindow < provider上限 - maxTokens
         # 全局默认按 deepseek-flash 标定：
-        #   0.7 x 1000000 = 700000 < 1048576 - 256000 = 792576
+        #   0.7 x 1000000 = 700000 < 1048576 - 65536 = 983040
         thresholdRatio: 0.7
         retainRatio: 0.16
-        # 摘要输出上限。必填且 >= 32768：8192 会把六节摘要截断，触发 fail-closed 的
-        # "summarization truncated at the token cap (incomplete checkpoint)"；
-        # 低于下限的配置本插件在构造时就拒绝。
-        maxTokens: 32768
-        chunkMessages: 40
+        # 摘要输出上限。下限 32768 是实测的：8192 会把六节摘要截断，触发 fail-closed 的
+        # "summarization truncated at the token cap (incomplete checkpoint)"。
+        # 这里用 65536，因为输出预算要先被 reasoning 吃掉一大块——离线用真实模型复现时，
+        # 一次 input=142769 的调用 out=24273 里有 20344 是 reasoning，正文只剩约 8k 余量；
+        # reasoning 一旦顶满上限，正文就是空的（实测同型失败：reasoning 32698/32768，content 为空）。
+        maxTokens: 65536
+        # 只有把 recursive 重新打开时才有意义。每块都是一整次模型调用，别用默认的 40：
+        # 那正是把一次压缩拆成 4–5 次调用的档位。
+        chunkMessages: 160
         auto: true
 
     - id: command-compact

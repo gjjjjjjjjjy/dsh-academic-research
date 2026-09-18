@@ -14,11 +14,11 @@
 #     config:
 #       domain: ml
 #       summaryLanguage: auto
-#       recursive: true
-#       chunkMessages: 40
+#       recursive: false      # one call; see README "递归分块"
+#       chunkMessages: 160
 #       thresholdRatio: 0.7
 #       retainRatio: 0.16
-#       maxTokens: 32768
+#       maxTokens: 65536
 #       auto: true
 #
 # Pro-only keys such as `faithful` and `customInstruction` are ignored rather
@@ -38,9 +38,9 @@
 #     config:
 #       domain: general
 #       summaryLanguage: auto
-#       recursive: true
-#       chunkMessages: 40
+#       recursive: false      # one call; see README "递归分块"
+#       chunkMessages: 160
 #       thresholdRatio: 0.7
 #       retainRatio: 0.16
-#       maxTokens: 32768
+#       maxTokens: 65536
 #       auto: true

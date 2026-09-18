@@ -17,14 +17,19 @@
     config:
       domain: general
       summaryLanguage: auto
-      recursive: true
-      chunkMessages: 40
+      # One call, never chunked: each chunk is a full model call (~2 minutes
+      # measured) on top of the merge, and the region is already bounded by
+      # thresholdRatio. Same shape as the built-in compaction-basic.
+      recursive: false
+      chunkMessages: 160
       # Pressure must land inside the real input limit:
       #   thresholdRatio x contextWindow < provider limit - maxTokens
       # Calibrated for deepseek-flash:
-      #   0.7 x 1000000 = 700000 < 1048576 - 256000 = 792576
+      #   0.7 x 1000000 = 700000 < 1048576 - 65536 = 983040
       thresholdRatio: 0.7
       retainRatio: 0.16
-      # A summary that hits this cap is rejected as truncated, never committed.
-      maxTokens: 32768
+      # Floor is 32768 (measured: 8192 truncates the six-section checkpoint). 65536 leaves
+      # room for the reasoning tokens that share this budget — a real call spent 20344 of
+      # its 24273 output tokens on reasoning.
+      maxTokens: 65536
       auto: true

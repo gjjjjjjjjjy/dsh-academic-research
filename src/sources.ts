@@ -48,6 +48,9 @@ const ORIGIN_LABEL = /^原文[：:]\s*$/;
 /** One citation line, with the bullet optional and the end line optional. */
 const REF_PATTERN = /^(S\d+)\s*:\s*L(\d+)\s*(?:-\s*L?(\d+))?$/;
 
+/** Separator between several citations written on one line. */
+const REF_SEPARATOR = /[,，、]/;
+
 /**
  * The label one citation is recorded and reported under.
  *
@@ -153,6 +156,12 @@ export interface ParsedRefs {
 /**
  * Parse the citation-only `[invariants]` draft body.
  *
+ * One line may carry several citations of the same source, separated by a
+ * comma. That is what a real model wrote (`- S139:L2, S139:L7-L8, S139:L20-L21`)
+ * and rejecting it would fail the whole compaction on a formatting choice the
+ * contract never forbade. Every citation in the list is still resolved and
+ * copied verbatim, so accepting the list costs no fidelity.
+ *
  * @param bodyLines - the section body exactly as the model wrote it.
  * @returns parsed citations plus every line that breaks the citation-only rule.
  */
@@ -167,15 +176,32 @@ export function parseRefs(bodyLines: readonly string[]): ParsedRefs {
       none = true;
       continue;
     }
-    const match = REF_PATTERN.exec(line.replace(/^[-*]\s*/, ''));
-    if (match === null) {
-      problems.push(`[invariants] 只允许来源引用（形如 S7:L1-L4），实际出现了：${line}`);
+    const listed: SourceRef[] = [];
+    const parts = line
+      .replace(/^[-*]\s*/, '')
+      .split(REF_SEPARATOR)
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+    /* An empty list means the line held separators or a bullet and nothing else. */
+    let legal = parts.length > 0;
+    for (const part of parts) {
+      const match = REF_PATTERN.exec(part);
+      if (match === null) {
+        legal = false;
+        break;
+      }
+      /* The pattern requires groups 1 and 2, so both are present. */
+      const from = Number(match[2]!);
+      const to = match[3] === undefined ? from : Number(match[3]);
+      listed.push({ source: match[1]!, from, to });
+    }
+    if (!legal) {
+      problems.push(
+        `[invariants] 只允许来源引用（形如 S7:L1-L4；同一来源的多个行段可写在一行，用逗号分隔），实际出现了：${line}`,
+      );
       continue;
     }
-    /* The pattern requires groups 1 and 2, so both are present. */
-    const from = Number(match[2]!);
-    const to = match[3] === undefined ? from : Number(match[3]);
-    refs.push({ source: match[1]!, from, to });
+    refs.push(...listed);
   }
   if (none && refs.length > 0) problems.push('[invariants] 同时写了 (none) 和来源引用');
   return { refs, none, problems };
@@ -240,12 +266,32 @@ function firstIndexOfPattern(
 }
 
 /**
+ * Drop the one blank line the block format leaves after a fragment's content.
+ *
+ * Exactly one line, never "every trailing blank": a blank line **inside** a
+ * preserved excerpt is part of the verbatim text, and a real checkpoint already
+ * holds one (`call 1: …` / blank / `=== 通过 ===`). Discarding blank lines
+ * wholesale rewrote carried text on its way from one checkpoint into the next,
+ * and V2 could not see it — it compares the fragment that was already rewritten.
+ * The one ambiguity the line format cannot resolve is a fragment whose own last
+ * line is blank: that is indistinguishable from the separator.
+ *
+ * @param lines - the lines collected after one `原文：` marker.
+ * @returns the same lines without the single trailing separator.
+ */
+function withoutBlockSeparator(lines: readonly string[]): readonly string[] {
+  const last = lines[lines.length - 1];
+  return last !== undefined && last.trim().length === 0 ? lines.slice(0, -1) : lines;
+}
+
+/**
  * Read the previous checkpoint's preserved fragments out of the region.
  *
  * This is the only independently specified must-keep set the program has
  * (Schema §1.3): the fragments an earlier checkpoint already preserved. They
  * are not re-selected by the model, so carry-forward does not depend on a weak
- * model noticing them.
+ * model noticing them. What is carried is the recorded text itself, blank lines
+ * included; a fragment that preserves nothing but blank lines is dropped.
  *
  * @param index - the region's source index.
  * @returns the preserved fragments in recorded order, empty when none.
@@ -274,10 +320,12 @@ export function extractCarriedFragments(index: SourceIndex): readonly CarriedFra
       continue;
     }
     if (ORIGIN_LABEL.test(line)) continue;
-    if (label !== null && line.trim().length > 0) body.push(line);
+    if (label !== null) body.push(line);
   }
   if (label !== null) fragments.push({ source: label, lines: body });
-  return fragments.filter((fragment) => fragment.lines.length > 0);
+  return fragments
+    .map((fragment) => ({ source: fragment.source, lines: withoutBlockSeparator(fragment.lines) }))
+    .filter((fragment) => fragment.lines.some((line) => line.trim().length > 0));
 }
 
 /** Render one `来源：`/`原文：` block for the final preserved section. */

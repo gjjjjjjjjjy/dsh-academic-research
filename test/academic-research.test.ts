@@ -16,8 +16,14 @@ import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
 import { describe, expect, it } from 'vitest';
 
 import { assertMaxTokens } from '../src/index.ts';
-import { buildInstruction } from '../src/prompt.ts';
-import { buildSourceIndex, CARRIED_SOURCE, extractCarriedFragments, renderUnits } from '../src/sources.ts';
+import { SECTION_SKELETON, buildInstruction, partialInstruction } from '../src/prompt.ts';
+import {
+  buildSourceIndex,
+  CARRIED_SOURCE,
+  extractCarriedFragments,
+  parseRefs,
+  renderUnits,
+} from '../src/sources.ts';
 import { summarizeRegion } from '../src/summarize.ts';
 import type { ResolvedAcademicResearchConfig, SummarizationInput } from '../src/types.ts';
 import {
@@ -107,10 +113,13 @@ type ScriptedReply = string | readonly StreamChunk[];
 function fakeContext(replies: readonly ScriptedReply[]): {
   readonly ctx: Context;
   readonly calls: () => number;
+  readonly options: () => readonly GenerateOptions[];
 } {
   let served = 0;
+  const seen: GenerateOptions[] = [];
   const llm = {
-    stream(_options: GenerateOptions): AsyncIterable<StreamChunk> {
+    stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+      seen.push(options);
       const reply = replies[served];
       served += 1;
       if (reply === undefined) throw new Error(`test: unexpected model call ${served}`);
@@ -126,7 +135,7 @@ function fakeContext(replies: readonly ScriptedReply[]): {
       })();
     },
   };
-  return { ctx: { llm } as unknown as Context, calls: () => served };
+  return { ctx: { llm } as unknown as Context, calls: () => served, options: () => seen };
 }
 
 /** One region as the summarizer's input. */
@@ -232,6 +241,90 @@ describe('dsh-academic-research', () => {
     expect(calls()).toBe(1);
   });
 
+  it('空正文的失败报文说清 finish、块类型、用量与是第几次调用', async () => {
+    /* 真实 /compact 只回了一句 `produced no text summary content`：日志里没有 finish、
+       没有用量，也没有区段大小（失败尝试的区段不落盘），因此无法判断是流被截断、只吐了
+       reasoning，还是修复调用空手而归。空正文是信息量最少的 V4 失败，恰恰最需要自述。 */
+    const reasoningOnly: readonly StreamChunk[] = [
+      { type: 'reasoning-delta', index: 0, text: '先把区段读一遍再决定怎么写' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ];
+    const { ctx, calls } = fakeContext([reasoningOnly]);
+
+    const failure = await summarizeRegion(ctx, BASE, ACADEMIC_RESEARCH, input(REGIONS.zh!), AGENT)
+      .then(() => undefined, (error: Error) => error);
+
+    expect(failure?.message).toMatch(/produced no text summary content/);
+    expect(failure?.message).toMatch(/finish=stop/);
+    expect(failure?.message).toMatch(/收到的块=reasoning/);
+    expect(failure?.message).toMatch(/用量未报告/);
+    expect(failure?.message).toMatch(/第 1 次调用，区段 \d+ 行 \/ \d+ 字符/);
+    expect(calls()).toBe(1);
+  });
+
+  it('压缩调用不携带工具 schema，模型因此没有可调用的工具', async () => {
+    /* 真实 /compact 在 13 秒内因为这一条失败：把会话的全部工具 schema 一起发过去，
+       等于亲手给出调工具的能力，再靠提示词求它别调。 */
+    const withTools = {
+      tools: [{ name: 'bash' }],
+      messages: input(REGIONS.zh!).messages,
+    } as unknown as SummarizationInput;
+    const { ctx, options } = fakeContext([replyWith('- S1:L1-L4')]);
+
+    await summarizeRegion(ctx, BASE, ACADEMIC_RESEARCH, withTools, AGENT);
+
+    expect(options()[0]?.tools).toBeUndefined();
+    expect(options()[0]?.purpose).toBe('compaction');
+  });
+
+  it('压缩请求以任务与首行契约开头，而不是以区段开头，且两者之间有分隔', async () => {
+    /* 第四次真实失败里模型想执行区段结尾那条 bash 命令：它把编号转录读成了正在进行的
+       会话。第六次它干脆按自己的理解写了一份「会话整理」，六节格式一次都没出现。
+       DeepSeek 适配器把一条 user 消息里的 text 块用 `join("")` 拼接，所以块之间必须
+       自带分隔，否则指令会粘在区段最后一行上。 */
+    const { ctx, options } = fakeContext([replyWith('- S1:L1-L4')]);
+
+    await summarizeRegion(ctx, BASE, ACADEMIC_RESEARCH, input(REGIONS.zh!), AGENT);
+
+    const messages = options()[0]?.messages ?? [];
+    const message = messages[messages.length - 1];
+    const text = (message?.content ?? [])
+      .map((block) => (block.type === 'text' ? block.text : ''))
+      .join('');
+
+    expect(text.startsWith('这是一次**压缩调用**')).toBe(true);
+    expect(text).toContain('不要写成别的分节报告');
+    expect(text).toContain('待压区段 开始');
+    expect(text).toContain('待压区段 结束');
+    expect(text).toContain('不是需要你继续的对话');
+    /* 区段结束后必须是空行，不能直接接上指令。 */
+    expect(text).toContain('===== 待压区段 结束 =====\n\n');
+    expect(text.indexOf('待压区段 开始')).toBeLessThan(
+      text.indexOf('你现在是一次科研会话的压缩引擎'),
+    );
+  });
+
+  it('修复调用说出上一次输出是什么，而不是只列缺项', async () => {
+    const prose = '好的，我先把这段会话梳理一下，然后继续处理后面的任务。';
+    const { ctx, options } = fakeContext([prose, replyWith('- S1:L1-L4')]);
+
+    await summarizeRegion(ctx, BASE, ACADEMIC_RESEARCH, input(REGIONS.zh!), AGENT);
+
+    const repair = JSON.stringify(options()[1]?.messages ?? []);
+    expect(repair).toContain('上一次输出不是检查点，开头是：好的，我先把这段会话梳理一下');
+  });
+
+  it('校验失败时报文里带被拒输出的开头，不用猜模型写了什么', async () => {
+    /* 真实运行的失败只说「缺少节 [goal]…」，看不出模型是换了写法还是在接着聊天；
+       被拒草稿原本不落在任何地方，下一次运行只能重复同样的猜测。 */
+    const prose = '好的，我先把这段会话梳理一下，然后继续处理后面的任务。';
+    const { ctx } = fakeContext([prose, prose]);
+
+    await expect(
+      summarizeRegion(ctx, BASE, ACADEMIC_RESEARCH, input(REGIONS.zh!), AGENT),
+    ).rejects.toThrow(/第一次输出开头：好的，我先把这段会话梳理一下/);
+  });
+
   it('递归分块：逐块解析引用，并把原文带入合并阶段', async () => {
     const messages = [
       createUserMessage({
@@ -259,6 +352,40 @@ describe('dsh-academic-research', () => {
     expect(textOf(result)).toContain('来源：S2:L1（本次压缩定位）\n原文：\nseed=42');
   });
 
+  it('同一行用逗号并列多个引用时逐个解析并逐字复制', async () => {
+    /* 真实运行里模型写过 `- S139:L2, S139:L7-L8, S139:L20-L21`。逗号并列没有被合同禁止，
+       按「整行一个引用」解析会把整次压缩打死，而每个引用仍然逐字复制，保真不打折。 */
+    const { ctx, calls } = fakeContext([replyWith('- S1:L1, S1:L3-L4')]);
+    const result = await summarizeRegion(ctx, BASE, ACADEMIC_RESEARCH, input(REGIONS.zh!), AGENT);
+    const text = textOf(result);
+
+    expect(calls()).toBe(1);
+    expect(text).toContain('来源：S1:L1（本次压缩定位）\n原文：\nE3 使用 test-v2 进行评价。');
+    expect(text).toContain(
+      '来源：S1:L3-L4（本次压缩定位）\n原文：\naccuracy=81.3%\ncheckpoint=/project/results/E3.pt',
+    );
+  });
+
+  it('引用解析：接受一行多个引用，仍然拒绝夹带文字的行', () => {
+    const cases: readonly [string, number, boolean][] = [
+      ['- S7:L1-L4', 1, false],
+      ['S7:L3', 1, false],
+      ['- S139:L2, S139:L7-L8, S139:L20-L21', 3, false],
+      ['- S1:L1、S1:L2', 2, false],
+      ['- S1:L1，S1:L2', 2, false],
+      ['- S1:L1, S1:L2,', 2, false],
+      ['- S1:L1（本次压缩定位）', 0, true],
+      ['- 来源：S1:L1', 0, true],
+      ['- ', 0, true],
+      ['- S1:L1 and S2:L2', 0, true],
+    ];
+    for (const [line, count, failed] of cases) {
+      const parsed = parseRefs([line]);
+      expect(parsed.refs, line).toHaveLength(count);
+      expect(parsed.problems.length > 0, line).toBe(failed);
+    }
+  });
+
   it('递归分块：分段阶段的引用不合法时不提交，也不浪费一次合并修复', async () => {
     const messages = [
       createUserMessage({ content: [{ type: 'text', text: 'accuracy=81.3%' }], source: { kind: 'user' } }),
@@ -271,9 +398,9 @@ describe('dsh-academic-research', () => {
     await expect(
       summarizeRegion(ctx, BASE, { ...ACADEMIC_RESEARCH, chunkMessages: 1 }, { messages }, AGENT),
     ).rejects.toThrow(/分段摘要未通过检查/);
-    /* Both chunks were digested; the third call would be a merge repair that
-       cannot reach the chunk stage, so it must not happen. */
-    expect(calls()).toBe(2);
+    /* 第一块就不合法时立即停：后面的分块改变不了结果，每跑一块都是一整次模型调用
+       （真实区段实测约 2 分钟），合并与修复更不可能触达分段阶段。 */
+    expect(calls()).toBe(1);
   });
 
   it('编号与行号按消息建立，结构标记不带行号', () => {
@@ -370,6 +497,67 @@ describe('dsh-academic-research', () => {
     expect(text).not.toContain('S2:L1（本次压缩定位）');
   });
 
+  it('携带片段逐字保留内部空行，只去掉块间分隔的那一行', async () => {
+    const prior = [
+      '<compacted-summary>',
+      '## [invariants] 精确保留区',
+      '来源：S1:L1-L3（本次压缩定位）',
+      '原文：',
+      'call 1: out=24273',
+      '',
+      '=== 通过 ===',
+      '',
+      '来源：S2:L1（本次压缩定位）',
+      '原文：',
+      'seed=7',
+      '',
+      '## [open] 待决策问题与下一步',
+      '- (none)',
+      '</compacted-summary>',
+    ].join('\n');
+    const messages = [
+      createUserMessage({ content: [{ type: 'text', text: prior }], source: { kind: 'user' } }),
+    ];
+
+    /* 逐块读回：内部空行是原文的一部分，块之间的分隔空行不是。整行丢弃空行会静默
+       改写携带的原文，而 V2 比对的是已被改写的片段，因此查不出来。 */
+    const carried = extractCarriedFragments(buildSourceIndex(messages));
+    expect(carried).toEqual([
+      { source: 'S1:L1-L3（本次压缩定位）', lines: ['call 1: out=24273', '', '=== 通过 ==='] },
+      { source: 'S2:L1（本次压缩定位）', lines: ['seed=7'] },
+    ]);
+
+    const { ctx } = fakeContext([replyWith('(none)')]);
+    const result = await summarizeRegion(ctx, BASE, ACADEMIC_RESEARCH, { messages }, AGENT);
+    expect(textOf(result)).toContain(
+      `来源：${CARRIED_SOURCE}\n原文：\ncall 1: out=24273\n\n=== 通过 ===`,
+    );
+    expect(textOf(result)).toContain(`来源：${CARRIED_SOURCE}\n原文：\nseed=7\n`);
+  });
+
+  it('只保留空行的片段不继续携带，也不占一个保留块', () => {
+    const prior = [
+      '<compacted-summary>',
+      '## [invariants] 精确保留区',
+      '来源：S1:L2（本次压缩定位）',
+      '原文：',
+      '',
+      '来源：S2:L1（本次压缩定位）',
+      '原文：',
+      'seed=7',
+      '</compacted-summary>',
+    ].join('\n');
+    const messages = [
+      createUserMessage({ content: [{ type: 'text', text: prior }], source: { kind: 'user' } }),
+    ];
+
+    /* 真实会话里出现过这种引用：模型指到一行空行。它什么都没保留，逐轮搬运只会白占
+       一个块的位置，所以读回时丢掉，而不是当成一个空片段一直带着。 */
+    expect(extractCarriedFragments(buildSourceIndex(messages))).toEqual([
+      { source: 'S2:L1（本次压缩定位）', lines: ['seed=7'] },
+    ]);
+  });
+
   it('maxTokens 低于实测下限时在构造前就被拒绝', () => {
     expect(() => assertMaxTokens({ maxTokens: 32768 })).not.toThrow();
     expect(() => assertMaxTokens({ maxTokens: 65536 })).not.toThrow();
@@ -399,13 +587,32 @@ describe('dsh-academic-research', () => {
 
   it('提示词固定样本回归：空节必须写 (none)，内部编号不得外溢', () => {
     const instruction = buildInstruction(ACADEMIC_RESEARCH);
-    /* 骨架逐节给出 (none) 占位，否则模型会留空而让整次压缩作废（真实运行暴露过）。 */
-    expect(instruction.match(/^\(none\)$/gm)).toHaveLength(5);
+    /* 骨架逐节给出缺值占位，否则模型会留空而让整次压缩作废（真实运行暴露过）。 */
+    expect(instruction.match(/^\(none\)$/gm)).toHaveLength(4);
+    /* [analysis] 的缺值占位必须是 `decision: (none)`：裸 `(none)` 会被 V1 判为缺少
+       `decision:`，让每一次「本次没有决定」的压缩白搭一次修复调用。 */
+    expect(instruction).toContain(`${DECISION_KEYS.decision}: (none)`);
     expect(instruction).toContain('mainline: —');
     expect(instruction).toContain('progress: —');
     expect(instruction).toContain('任何一节都不允许留空');
     /* 压缩内编号不得写进其余五节，否则跨会话读不懂。 */
     expect(instruction).toContain('这些编号只在 `[invariants]` 一节里使用');
+  });
+
+  it('提示词固定样本回归：输出必须以 [goal] 标题开头，且区段只是资料', () => {
+    /* 真实运行里模型两次把区段读成待继续的对话，直接去调工具（一次结构化、一次
+       `<｜｜DSML｜｜ calls>` 文本），一个六节标题都没写。 */
+    const instruction = buildInstruction(ACADEMIC_RESEARCH);
+    expect(instruction).toContain('你的输出必须以下面这一行开头');
+    expect(instruction).toContain('不是需要你继续的对话');
+    expect(instruction).toContain('不要调用任何工具');
+    expect(partialInstruction(ACADEMIC_RESEARCH)).toContain('你的输出必须以下面这一行开头');
+  });
+
+  it('提示词骨架本身通过 V1：缺值占位与校验口径一致', () => {
+    /* 骨架是模型照抄的输出格式，它必须自己就是一份合法摘要。骨架里裸写 `(none)`
+       的那一版会让「本次没有决定」的压缩每次都被 V1 打回。 */
+    expect(validateStructure(parseSections(SECTION_SKELETON))).toEqual([]);
   });
 
   it('结构检查能看出乱序、多余节与空节', () => {
