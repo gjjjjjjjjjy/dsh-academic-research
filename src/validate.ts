@@ -101,8 +101,15 @@ export interface ParsedSummary {
 /** `## [key] label`. */
 const HEADING = /^##\s*\[([a-z]+)\]\s*(.*)$/;
 
-/** A bare experiment entry line. */
-const ENTRY = /^E(\d+)$/;
+/**
+ * A bare experiment entry line.
+ *
+ * The identifier after `E` may be digits or letters: a project names its
+ * experiments `实验 B` / `E3` alike, and forcing digits would make the record
+ * invent an identifier the source never used (Schema §2.2 requires the recorded
+ * one to be kept).
+ */
+const ENTRY = /^E([0-9A-Za-z]+)$/;
 
 /** One experiment-ledger field line. */
 const FIELD = /^(purpose|design|config|status|result|artifacts|conclusion)\s*[:：]\s*(.*)$/;

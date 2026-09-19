@@ -404,17 +404,54 @@ describe('dsh-academic-research', () => {
     expect(calls()).toBe(1);
   });
 
-  it('编号与行号按消息建立，结构标记不带行号', () => {
+  it('编号与行号按消息建立，结构标记不带行号，并在标题上标出总行数', () => {
     const index = buildSourceIndex(input(REGIONS.zh!).messages);
     expect(renderUnits(index)).toBe(
       [
-        '[S1] role=user',
+        '[S1] role=user lines=4',
         'L1: E3 使用 test-v2 进行评价。',
         'L2: seed=42',
         'L3: accuracy=81.3%',
         'L4: checkpoint=/project/results/E3.pt',
       ].join('\n'),
     );
+  });
+
+  it('实验台账接受字母编号：项目把「实验 B」记为 EB，不能逼它编一个数字号', () => {
+    const summary = [
+      '## [goal] 当前目标与假设',
+      'mainline: M1',
+      'progress: —',
+      '## [experiments] 实验台账',
+      'E3',
+      'purpose: —',
+      'design: —',
+      'config: —',
+      'status: 已完成',
+      'result: —',
+      'artifacts: —',
+      'conclusion: —',
+      'EB',
+      'purpose: —',
+      'design: —',
+      'config: —',
+      'status: 已完成',
+      'result: —',
+      'artifacts: —',
+      'conclusion: —',
+      '## [evidence] 记录与来源',
+      '(none)',
+      '## [analysis] 已有分析与判断边界',
+      'decision: 无',
+      'state: 已确认',
+      'basis: 用户指令',
+      'judgement: 无',
+      '## [invariants] 精确保留区',
+      '(none)',
+      '## [open] 待决策问题与下一步',
+      '- (none)',
+    ].join('\n');
+    expect(validateStructure(parseSections(summary))).toEqual([]);
   });
 
   it('前次检查点已保留的原文被识别为独立必保集合并继续携带', async () => {
@@ -731,6 +768,18 @@ describe('dsh-academic-research', () => {
     expect(instruction).toContain('任何一节都不允许留空');
     /* 压缩内编号不得写进其余五节，否则跨会话读不懂。 */
     expect(instruction).toContain('这些编号只在 `[invariants]` 一节里使用');
+  });
+
+  it('提示词固定样本回归：引用上界用 lines=，内容里的行号不算引用行号', () => {
+    /* 真实运行两次引用越界：一次把来源标题行与 `-- ` 标记行也数进去（28 行的来源引到
+       L29、321 行的引到 L323），一次把内容里讨论的文件行号当成引用行号（44 行的来源
+       引到 L176）。两种都在同一份 8000+ 行的区段里发生，整次压缩因此作废。 */
+    const instruction = buildInstruction(ACADEMIC_RESEARCH);
+    expect(instruction).toContain('lines=');
+    expect(instruction).toContain('引用的行号必须在 `1..lines` 之内');
+    expect(instruction).toContain('不要按渲染出来的物理行数去数');
+    expect(instruction).toContain('原文内容里出现的行号不是引用行号');
+    expect(instruction).toContain('S67:L5-L176');
   });
 
   it('提示词固定样本回归：输出必须以 [goal] 标题开头，且区段只是资料', () => {

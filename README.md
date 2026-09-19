@@ -74,7 +74,7 @@ ln -s <包>/presets/academic-research/skills/research-workflow ~/.dsh/skills/res
 送入压缩模型前，程序把待压区段渲染成带编号的原文，并保留原文本：
 
 ```text
-[S7]
+[S7] role=user lines=4
 L1: E3 使用 test-v2 进行评价。
 L2: seed=42
 L3: accuracy=81.3%
@@ -82,6 +82,9 @@ L4: checkpoint=/project/results/E3.pt
 ```
 
 `S<n>` / `L<n>` 由程序分配。程序此时**不知道**这些内容是否重要，只知道每一行来自哪里。
+来源标题上的 `lines=<n>` 是该来源的行数，也是引用的上界：原文本身经常满是别的行号
+（diff 的 `@@ -18,6 +18,7 @@`、文件正文的 `75:` 前缀、对话里的「第 619 行」），实测有一批失败正是
+模型把这些行号或渲染出来的物理行数当成了 `L<n>`，引用越界、整次压缩作废。
 
 模型正常写其余五节，但 `[invariants]` 里**只写引用，不重写数值**：
 

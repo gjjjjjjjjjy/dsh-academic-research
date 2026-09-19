@@ -151,7 +151,11 @@ export function buildSourceIndex(messages: readonly Message[]): SourceIndex {
 export function renderUnits(units: SourceIndex): string {
   const out: string[] = [];
   for (const unit of units) {
-    out.push(`[${unit.id}] role=${unit.role}`);
+    const lineCount = unit.blocks.reduce((sum, block) => sum + block.lines.length, 0);
+    /* The count goes on the header so a citation cannot silently overshoot: a
+       real run cited `S67:L5-L176` against a 44-line source, and the model had no
+       way to see the bound short of counting thousands of numbered lines. */
+    out.push(`[${unit.id}] role=${unit.role} lines=${lineCount}`);
     let lineNumber = 1;
     for (const block of unit.blocks) {
       if (block.header !== undefined) out.push(`${MARKER}${block.header}`);
