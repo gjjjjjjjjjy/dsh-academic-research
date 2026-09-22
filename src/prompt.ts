@@ -55,26 +55,55 @@ export const SECTION_SKELETON = [
   '(none)',
 ].join('\n');
 
-/** The citation-only rule for the preserved section. */
-const CITATION_RULE = [
-  '本节**只写来源引用**，不要抄写内容：',
-  '',
-  '```',
-  '- S7:L1-L4',
-  '- S12:L2, S12:L7-L8, S12:L20-L21',
-  '```',
-  '',
-  '同一来源的多个行段可以写在同一行，用逗号分隔；一行里除了引用不能有任何其它文字。',
-  '程序会按你给的范围逐字取出原文、填入最终摘要，所以不要在这里重写数值。',
-  '选范围时要带上实验归属（H/E 编号）、指标名和必要条件；不能只选一行裸数字。',
-  '没有需要保留的原文时写 `(none)`。',
-].join('\n');
+/**
+ * The rule for the preserved section: which citations to write, and what a
+ * citation may look like.
+ *
+ * One authoritative block. The selection discipline lives here because it is the
+ * only place the model is asked to choose; the numbering rules stay in
+ * {@link NUMBERING_RULE} (how to read the region) and are pointed at from here.
+ *
+ * @param cfg - resolved configuration, for the domain's own field list.
+ * @returns the section body for `[invariants]`.
+ */
+function invariantRule(cfg: ResolvedAcademicResearchConfig): string {
+  const pack = DOMAIN_PACKS[cfg.domain];
+  return [
+    '本节**只写来源引用**，程序按引用从原文逐字取出、填进最终摘要——不要在这里重写数值，也不要用别处的行号。',
+    '',
+    '```',
+    '- S7:L1-L4',
+    '- S12:L2, S12:L7-L8, S12:L20-L21',
+    '```',
+    '',
+    '真实运行里出现过的错误写法（会让整次压缩作废）：`- S67:L5-L176`——S67 只有 44 行，越界；'
+      + '以及把内容里讨论的「第 619 行」当成引用行号。',
+    '同一来源的多个行段可以写在一行，用逗号分隔；一行里除了引用不能有任何其它文字；起止都必须在'
+      + '该来源的 `lines=` 之内；拿不准就少引几行。',
+    '',
+    '**选什么：宁少勿多。** 按下面的优先级取；取不到带归属和条件的片段就少取，不要为了填满而取：',
+    '',
+    '1. 执行契约：范围与顺序（训练/开发/评价各用哪些任务、评价臂固定顺序、baseline 的明确身份）；'
+      + '计算定义（目标函数、阈值比较符、平局规则、聚合对象与权重与分母与去重规则）；'
+      + '产物身份（产物对应选中 epoch、最后 epoch 还是续跑状态，下游实际读取哪个产物）；'
+      + '执行边界（进程分工、共享文件写入者与同步条件、缺关键数据时的停止规则、seed 的角色与约束）。',
+    '2. 带实验归属的原始数值与条件：H/E 编号 + 指标名 + 单位 + 对照 + 必要的运行条件。',
+    '3. 报错串、恢复命令、精确路径。',
+    '4. 代码：仅当它本身是契约（例如决定选优或统计口径的那个函数），且带文件路径与它在流程中的角色；'
+      + '单独的签名或片段不取。',
+    '',
+    '**不选**：寒暄、确认、「请你 review」「提交之前的修改」这类对话；重复的中间输出；只摘一行裸数字；'
+      + '模板里有、原文里没有的内容。',
+    '仍被分析、调试或下一步决策引用的记录不得漏选。',
+    `本领域优先保留：${pack.invariantFields}`,
+    '没有需要保留的原文时写 `(none)`。',
+  ].join('\n');
+}
 
 /** How the model must read the numbering the program assigned. */
 const NUMBERING_RULE = [
-  '待压原文已经按消息编号为 `[S1]`、`[S2]`…，每条消息内部逐行编号为 `L1`、`L2`…。',
+  '待压原文已经按消息编号为 `[S1]`、`[S2]`…，每条消息内部逐行编号为 `L1`、`L2`…；`S7:L1-L4` 表示「第 7 条来源的第 1 到第 4 行（含两端）」。',
   '每条来源的第一行给出它的总行数（`[S64] role=… lines=321`）：**引用的行号必须在 `1..lines` 之内**，超出会被判为越界、整次压缩作废。`lines=` 是唯一权威的上界——不要按渲染出来的物理行数去数，来源标题行和 `-- ` 标记行都不占行号。',
-  '`S7:L1-L4` 表示「第 7 条来源的第 1 到第 4 行（含两端）」。',
   '**原文内容里出现的行号不是引用行号。** diff 的 `@@ -18,6 +18,7 @@`、文件正文的 `75:` 前缀、对话里讨论的「第 619 行」「line 882」都属于内容；只有行首 `L<n>:` 这个前缀才是可引用的行号。真实运行里模型把内容里的文件行号写成引用（对一份 44 行的来源写 `S67:L5-L176`），整次压缩因此作废。',
   '以 `-- ` 开头的行是结构标记（例如工具调用与工具结果的分界），它们没有行号，不能被引用。',
   '**这些编号只在 `[invariants]` 一节里使用。** 其余五节不得出现 `S<n>`、`L<n>` 或 `S7:L1-L4` —— 它们只在本次压缩内有效，换一个会话就读不懂。`[evidence]` 的出处写 `E<n>`、精确文件路径或 `(未溯源)`。',
@@ -151,8 +180,12 @@ function bodyContract(cfg: ResolvedAcademicResearchConfig): string {
     `- \`${DECISION_KEYS.decision}:\` 收纳**已提出的方案及其当前状态**，包括尚未确认的建议。**出现在这里不等于已经获准执行。**`,
     `- 没有决定时写一行 \`${DECISION_KEYS.decision}: (none)\`；该空项不需要 \`${DECISION_KEYS.state}:\` 与 \`${DECISION_KEYS.basis}:\`，也不要为了填满而编一条决定。`,
     `- 每条非空 \`${DECISION_KEYS.decision}:\` 必须带 \`${DECISION_KEYS.state}:\`（五词之一）与 \`${DECISION_KEYS.basis}:\`；没有来源时 \`${DECISION_KEYS.basis}:\` 写 \`—\`，**不得为了通过校验编造确认记录**。`,
+    `- **每一条 \`${DECISION_KEYS.decision}:\` 都要能在原文里指出是谁、在哪条记录里提出的**（用户指令、某条审查发言、某个 E 编号或某份文档）。指不出来就不要写成 \`${DECISION_KEYS.decision}:\`。`,
+    `- **\`${DECISION_KEYS.judgement}:\` 不能提升成一条决定。** 观察、边界说明、对读数的解释、「A 与 B 不一致」这类记录写在它所属决定条目的 \`${DECISION_KEYS.judgement}:\` 下；原文没有提出过决定，就不要为它补一个 \`${DECISION_KEYS.decision}:\` 标题。`,
+    `- \`${DECISION_KEYS.state}: 已确认\` 必须有原文的确认记录（用户的确认、已确认的规格或明确写下的确认依据）；原文只有分析或判断时状态写 \`建议\`，依据不足就把 \`${DECISION_KEYS.basis}:\` 写成 \`—\`，**不得自行升级状态**。`,
     `- 状态为 \`建议\` 的条目必须用 \`${DECISION_KEYS.question}:\` 指向 \`[open]\` 中已有的 \`Q<n>\`。`,
     `- \`${DECISION_KEYS.judgement}:\` 只放解释、分析、推断以及已有疑点 —— 它**不带**这套状态；这两类不要混写。`,
+    `- **保留限定语。** 「本次区段未给出该数值」「可比性未定」「没有测过 X」这类说明是下一位决策者要看的缺口，不能因为压缩而删掉；缺值本身写 \`—\`，缺口写在 \`${DECISION_KEYS.judgement}:\` 或 \`[open]\`。`,
     '',
     '**建议不能自动变成下一步。** 只有后续输入明确给出确认依据，才能据此更新状态、并把动作写进 `[open]` 的 `已确定下一步：`。强模型提出过、或被重复写过几次，都不构成升级理由。',
     '原文有跨实验关系就点名 E 编号；没有就不要强行寻找矛盾、不要强行排除替代解释、不要强行生成反证条件。',
@@ -163,14 +196,7 @@ function bodyContract(cfg: ResolvedAcademicResearchConfig): string {
     '',
     '## [invariants] 精确保留区',
     '',
-    CITATION_RULE,
-    '',
-    '选择范围时优先保留带上下文的原始行或小段，不只摘出裸数字；数值必须仍能对应到原实验、指标和条件。',
-    '重复中间输出可以不选；但仍被分析、调试或下一步决策引用的记录不得漏选。',
-    '当前任务已有下列执行契约时同样选中其原文与适用范围；无关项不展开，不凭模板补全：',
-    '范围与顺序（训练/开发/评价各用哪些任务、评价臂固定顺序、baseline 的明确身份）；计算定义（目标函数、阈值比较符、平局规则、聚合对象与权重与分母与去重规则）；'
-      + '产物身份（产物对应选中 epoch、最后 epoch 还是续跑状态，下游实际读取哪个产物）；执行边界（进程分工、共享文件写入者与同步条件、缺关键数据时的停止规则、seed 的角色与约束）。',
-    `本领域优先保留：${pack.invariantFields}`,
+    invariantRule(cfg),
     '',
     '## [open] 待决策问题与下一步',
     '',
@@ -233,8 +259,34 @@ const FIDELITY_RULES = [
   '',
   '- 公式、单位、阈值、常量、路径、命令、报错串、标识符一律逐字保留：禁止四舍五入、单位换算、符号替换、公式化简和路径改写。',
   '- 原文里若出现 `<compacted-summary>` 块，它是前次检查点：保留仍成立的事实，丢弃已过时的，合并成一份，不要逐字照抄。',
-  '- 不同条件下的旧结果不能被新结果静默覆盖；明确纠正的记录写「旧值 → 新值，纠正依据」。重复出现的说法不算新增证据。',
+  '- 同一个键有新旧两个值时，正文只写**最新**的值；确需保留旧值就写成「旧值 → 新值，纠正依据」。不同条件下的旧结果不能被新结果静默覆盖；重复出现的说法不算新增证据。',
   '- 不要提及这次压缩请求，不要说明上下文被压缩过。**只输出检查点文本**：第一行是 `## [goal] 当前目标与假设`，不要写成别的分节报告，不要调用任何工具。',
+].join('\n');
+
+/**
+ * The closing self-check.
+ *
+ * Every real validation failure so far was a mechanical slip (a wrong line
+ * number, one stray line in the ledger, a bare `(none)` in `[analysis]`), not a
+ * misunderstanding of the task. The rules are stated up front; repeating the
+ * checkable ones at the very end is what a model reads last before answering.
+ *
+ * The status-drift and qualifier-loss checks have no mechanical counterpart —
+ * only `[invariants]` is copied verbatim, the other five sections are rewritten
+ * every round — so the self-check is the last place they can still be caught.
+ */
+const SELF_CHECK = [
+  '## 交卷前自查（逐条核对，不通过就改）',
+  '',
+  '1. 第一行是 `## [goal] 当前目标与假设`，六节按序，没有第七节。',
+  '2. 每节都非空：没有内容的写 `(none)`；`[analysis]` 的空项写 `decision: (none)`。',
+  `3. 每条非空 \`decision:\` 都带 \`state:\` 与 \`basis:\`；\`state: 建议\` 的带 \`question:\`，且该 Q 编号在 \`[open]\` 里存在。`,
+  '4. 每条 `decision:` 都能在原文指出是谁、在哪条记录里提出的；指不出来的留在 `judgement:`，没有为它补出 `decision:` 标题。',
+  '5. `state: 已确认` 与 `已验证` 的条目在 `basis:` 里写出了原文的确认依据；原文只有分析或判断时状态写 `建议`，没有自行升级。',
+  '6. 原文里说明「为什么还是空的」「可比性未定」「没有测过 X」的限定语逐条带走：缺值写 `—`，但「尚不知道什么」没有被压掉。',
+  '7. `[experiments]` 每条实验都是「一行 E 编号 + 七个字段键」，顺序固定，缺值写 `—`。',
+  '8. `[invariants]` 只有来源引用，每段引用的起止都在该来源的 `lines=` 之内。',
+  '9. 全文没有 `S<n>`/`L<n>` 出现在 `[invariants]` 之外；没有工具调用、没有前言后记。',
 ].join('\n');
 
 /**
@@ -270,6 +322,8 @@ export function buildInstruction(cfg: ResolvedAcademicResearchConfig): string {
     bodyContract(cfg),
     '',
     FIDELITY_RULES,
+    '',
+    SELF_CHECK,
   ].join('\n');
 }
 
@@ -303,14 +357,22 @@ export function partialInstruction(cfg: ResolvedAcademicResearchConfig): string 
     '',
     '`[invariants]` 的写法：',
     '',
-    CITATION_RULE,
+    invariantRule(cfg),
     '',
     FIDELITY_RULES,
+    '',
+    SELF_CHECK,
   ].join('\n');
 }
 
 /**
  * Build the merge directive that folds chunk digests into the final summary.
+ *
+ * The merge call produces the final six sections, so it carries the same
+ * section contract and self-check as the single-pass directive: without them the
+ * merged output had no seven-field ledger rule and no decision rule to follow,
+ * and V1 rejected the result of a recursive compaction that the chunk path had
+ * built correctly.
  *
  * @param cfg - resolved dsh-academic-research configuration.
  * @param partials - ordered chunk digests.
@@ -343,7 +405,11 @@ export function mergeInstruction(
     '',
     invariantBlocks.length === 0 ? '(none)' : invariantBlocks.join('\n\n'),
     '',
+    bodyContract(cfg),
+    '',
     FIDELITY_RULES,
+    '',
+    SELF_CHECK,
     '',
     '## 各分段摘要',
     '',
@@ -365,6 +431,33 @@ export function withRepair(instruction: string, problems: readonly string[]): st
     '## 上一次输出没有通过检查，请完整重做',
     '',
     '下面逐条列出了缺失或不合法的地方。请输出一份**完整**的六节交接记录，逐条修掉这些问题；不要只输出被修复的部分，也不要解释。',
+    '',
+    ...problems.map((problem) => `- ${problem}`),
+  ].join('\n');
+}
+
+/**
+ * Append the citation-only repair directive.
+ *
+ * Used when the draft's other five sections already pass every check and only
+ * its `[invariants]` citations are wrong. Re-emitting a whole checkpoint is the
+ * expensive and fragile step — a real repair call returned nothing but
+ * reasoning, and another died on the transport layer — so this repair asks for
+ * the corrected citation list alone; the program keeps the first draft's other
+ * sections and re-assembles the preserved section itself.
+ *
+ * @param instruction - the directive that produced the failed draft.
+ * @param problems - the citation problems found in the draft.
+ * @returns the citation-only repair instruction.
+ */
+export function withCitationRepair(instruction: string, problems: readonly string[]): string {
+  return [
+    instruction,
+    '',
+    '## 上一次输出的 `[invariants]` 引用不合法，只重发这一节的引用清单',
+    '',
+    '其余五节已经合格，**不要再输出它们**。只输出修正后的引用清单：一行一条（或同一来源的多个行段写在'
+      + '一行，用逗号分隔），逐条修掉下面列出的问题，不要解释。',
     '',
     ...problems.map((problem) => `- ${problem}`),
   ].join('\n');

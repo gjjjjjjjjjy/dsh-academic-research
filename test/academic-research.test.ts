@@ -16,7 +16,7 @@ import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
 import { describe, expect, it } from 'vitest';
 
 import { assertMaxTokens } from '../src/index.ts';
-import { SECTION_SKELETON, buildInstruction, partialInstruction } from '../src/prompt.ts';
+import { SECTION_SKELETON, buildInstruction, mergeInstruction, partialInstruction } from '../src/prompt.ts';
 import {
   buildSourceIndex,
   CARRIED_SOURCE,
@@ -207,6 +207,44 @@ describe('dsh-academic-research', () => {
       summarizeRegion(ctx, BASE, ACADEMIC_RESEARCH, input(REGIONS.zh!), AGENT),
     ).rejects.toThrow(/S9 不存在/);
     expect(calls()).toBe(2);
+  });
+
+  it('引用类失败只让模型重发引用清单，其余五节沿用第一次草稿', async () => {
+    /* 完整重做要重写整篇检查点（真实运行里一次 8 万字符），而修复调用正是断流与空正文
+       最常发生的一步。引用类失败只需要修正后的引用行。 */
+    const outOfRange = replyWith('- S1:L1-L99');
+    const { ctx, calls, options } = fakeContext([outOfRange, '- S1:L1-L2']);
+
+    const result = await summarizeRegion(ctx, BASE, ACADEMIC_RESEARCH, input(REGIONS.zh!), AGENT);
+    const text = textOf(result);
+
+    expect(calls()).toBe(2);
+    expect(JSON.stringify(options()[1]?.messages ?? [])).toContain('只重发这一节的引用清单');
+    /* 其余五节来自第一次草稿（replyWith 的固定文本），不是第二次调用重新生成的。 */
+    expect(text).toContain('mainline: 项目主线：在 test-v2 上验证聚合口径');
+    /* 修正后的引用由程序逐字展开。 */
+    expect(text).toContain('来源：S1:L1-L2（本次压缩定位）\n原文：\nE3 使用 test-v2 进行评价。\nseed=42');
+    expect(text).not.toContain('S1:L1-L99');
+  });
+
+  it('引用类修复只给一次机会，不追加第三次调用', async () => {
+    const bad = replyWith('- S1:L1-L99');
+    const { ctx, calls } = fakeContext([bad, '- S1:L1-L99']);
+
+    await expect(
+      summarizeRegion(ctx, BASE, ACADEMIC_RESEARCH, input(REGIONS.zh!), AGENT),
+    ).rejects.toThrow(/一次修复仍未通过/);
+    expect(calls()).toBe(2);
+  });
+
+  it('非引用类失败仍然完整重做', async () => {
+    const bare = replyWith('- S1:L1');
+    const { ctx, options } = fakeContext([bare, bare]);
+
+    await expect(
+      summarizeRegion(ctx, BASE, ACADEMIC_RESEARCH, input(['81.3', '0.42']), AGENT),
+    ).rejects.toThrow(/裸数字/);
+    expect(JSON.stringify(options()[1]?.messages ?? [])).toContain('请完整重做');
   });
 
   it('只选到裸数字时失败', async () => {
@@ -768,6 +806,68 @@ describe('dsh-academic-research', () => {
     expect(instruction).toContain('任何一节都不允许留空');
     /* 压缩内编号不得写进其余五节，否则跨会话读不懂。 */
     expect(instruction).toContain('这些编号只在 `[invariants]` 一节里使用');
+  });
+
+  it('提示词固定样本回归：选择纪律（优先级 + 宁少勿多 + 正反例）', () => {
+    /* 真实区段里模型选过纯对话片段（「请你review一遍我修改了什么」18 字符等），
+       ccf 那份检查点更是 65% 都是 [invariants]；它们会被无条件继续携带下去。 */
+    const instruction = buildInstruction(ACADEMIC_RESEARCH);
+    expect(instruction).toContain('选什么：宁少勿多');
+    expect(instruction).toContain('执行契约');
+    expect(instruction).toContain('带实验归属的原始数值与条件');
+    expect(instruction).toContain('**不选**');
+    expect(instruction).toContain('寒暄');
+    expect(instruction).toContain('请你 review');
+    /* 正反例都给：越界写法与内容行号混用的实例。 */
+    expect(instruction).toContain('- S7:L1-L4');
+    expect(instruction).toContain('S67:L5-L176');
+  });
+
+  it('提示词固定样本回归：结尾有交卷自查表', () => {
+    /* 真实失败全是机械失误（越界、台账多一行、[analysis] 裸 (none)），
+       而这些规则都写在指令中段；自查表放在模型最后读到的地方。 */
+    const instruction = buildInstruction(ACADEMIC_RESEARCH);
+    expect(instruction).toContain('## 交卷前自查（逐条核对，不通过就改）');
+    expect(instruction).toContain('[invariants]` 只有来源引用，每段引用的起止都在该来源的 `lines=` 之内');
+    expect(instruction.trimEnd().endsWith('没有工具调用、没有前言后记。')).toBe(true);
+  });
+
+  it('三种指令形状都带交卷自查表；产出最终六节的两种都带分节契约', () => {
+    /* 合并阶段产出最终六节，却曾经拿不到 [experiments]/[analysis] 的契约：递归压缩时
+       分块与合并都能跑通，最终检查却因缺少七字段与 decision 规则被判失败。 */
+    const instruction = buildInstruction(ACADEMIC_RESEARCH);
+    const partial = partialInstruction(ACADEMIC_RESEARCH);
+    const merge = mergeInstruction(
+      ACADEMIC_RESEARCH,
+      ['分段摘要'],
+      ['来源：S1:L1（本次压缩定位）\n原文：\nseed=42'],
+    );
+
+    for (const text of [instruction, partial, merge]) {
+      expect(text).toContain('## 交卷前自查（逐条核对，不通过就改）');
+    }
+    for (const text of [instruction, merge]) {
+      expect(text).toContain('七个 ASCII 字段键');
+      expect(text).toContain('都要能在原文里指出是谁');
+    }
+  });
+
+  it('提示词固定样本回归：judgement 不升格为决定、状态不自行升级、限定语不丢', () => {
+    /* ccf 会话实测：上一版 [analysis] 末尾两条孤立的 `judgement:`（实验 11 的边界、
+       E9 与 E11 的 loss 与分类分歧）在这一版被加了一个 `decision:` 头并写成 `state: 已确认`，
+       而原文里没有人做过这个决定、也没有任何确认依据。V1 只查字段存在与枚举值，抓不到升格；
+       同一轮还把 `result: —（本次区段未给出指标数值）` 压成 `result: —（两处）`，丢了缺口说明。 */
+    const instruction = buildInstruction(ACADEMIC_RESEARCH);
+    expect(instruction).toContain('都要能在原文里指出是谁、在哪条记录里提出的');
+    expect(instruction).toContain('不能提升成一条决定');
+    expect(instruction).toContain('必须有原文的确认记录');
+    expect(instruction).toContain('不得自行升级状态');
+    expect(instruction).toContain('保留限定语');
+    /* 散文每轮重写，所以这三条还要出现在模型最后读到的自查表里。 */
+    expect(instruction).toContain('没有为它补出 `decision:` 标题');
+    expect(instruction).toContain('没有自行升级');
+    expect(instruction).toContain('没有被压掉');
+    expect(partialInstruction(ACADEMIC_RESEARCH)).toContain('没有自行升级');
   });
 
   it('提示词固定样本回归：引用上界用 lines=，内容里的行号不算引用行号', () => {

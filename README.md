@@ -175,6 +175,9 @@ checkpoint=/project/results/E3.pt
 | **V4 截断** | 接口报截断、返回空内容或明显不完整时，不当成成功摘要 |
 
 失败后**携缺项修复一次**；修复仍不过就抛错，**不提交失败摘要，不回退普通摘要，不做多轮自我修复**。
+这一次修复按失败类型换形状：只有引用不合法（其余五节已合格）时，第二次调用**只重发 `[invariants]` 的引用
+清单**，程序把它装回第一次草稿并重新校验——完整重做要重写整篇检查点，而修复调用正是出现过「只回
+reasoning、正文为空」和传输层断流的一步；结构或内容类失败仍要求完整重做六节。
 
 按 Schema §4.2，**没有跳过保真校验的生产开关**。
 
@@ -255,10 +258,14 @@ dsh plugin --profile <profile> add /绝对路径/dsh-academic-research
 ### 自带 agent 预设
 
 包里带一个装完即可在设置里选用的预设：`academic-research`，显示名「科研模式」。它等于内置
-`standard` 的整份 assembly，改动只有两处：压缩后端换成 `dsh-academic-research`（领域包 `ml`），
-`skill-filesystem` 行挂上预设自带的 `skills/`（`research-workflow`，见上文）。这是
-`dsh-agent-presets` 认可的 shipped 变体做法（`cordis`、`code` 也这么做），**代价是它不随
-dsh 升级自动更新**——升级 dsh 后要重新生成 `presets/academic-research/agent.cordis.yml`。
+`standard` 的整份 assembly，改动只有三处：压缩后端换成 `dsh-academic-research`（领域包 `ml`）、
+`skill-filesystem` 行挂上预设自带的 `skills/`（`research-workflow`，见上文）、`persona` 行写入
+**科研硬性要求**（长程 agent 中默认不新增 hash／冻结 contract／baseline／gate；不写兜底分支；
+做根因修复；临时产物在对应工作结束后删除等，见 `presets/academic-research/agent.cordis.yml`）。
+persona 是本预设恒常生效的一层，所以这些要求不依赖工作区里有没有 `AGENTS.md`、也不依赖技能
+是否被加载；项目自己的 `AGENTS.md` 照常生效。这是 `dsh-agent-presets` 认可的 shipped 变体做法
+（`cordis`、`code` 也这么做），**代价是它不随 dsh 升级自动更新**——升级 dsh 后要重新生成
+`presets/academic-research/agent.cordis.yml`。
 
 预设是**目录**，不是单文件：`agent.cordis.yml` + `preset.yml` + `skills/`。两种装法：
 

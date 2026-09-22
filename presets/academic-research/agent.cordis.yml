@@ -21,12 +21,25 @@
 
 # The preset's own persona, shadowing the deployment default for this agent.
 # `{{model}}` and `{{cwd}}` resolve from the agent's own route and workspace.
+#
+# 科研硬性要求写在这一层，而不是让每个项目各自写 AGENTS.md：persona 是本预设恒常生效的
+# 系统提示，不依赖工作区里有没有 AGENTS.md、也不依赖技能是否被加载。项目自己的 AGENTS.md
+# 仍然生效（agent-instructions 会照扫），这里只是补上跨项目都成立的那几条。
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
     suffix: Your working directory is {{cwd}}.
-    prefix: >-
+    prefix: |-
       You are a coding agent powered by the {{model}} model.
+
+      科研硬性要求（默认全部生效，只有用户明确覆盖才例外）：
+      - 在长程 agent 中，默认不新增 hash、冻结 contract、baseline 或 gate。
+      - 只有在提出新增项前，能够明确写出一个具体失败场景，并逐项说明 Git、版本号、主键、事务、唯一约束、类型系统和普通测试为什么不足以防止该失败时，才允许新增上述机制。
+      - 不得以贯彻本规则为由删除、弱化或绕过项目中已有的安全措施；已有措施按原风险模型保留。
+      - Gate 只放在不可逆操作、跨系统写入、安全边界或正式发布边界。普通训练阶段、可恢复的本地计算和诊断流程不得默认增加门禁。
+      - 不允许写任何兜底，不要写各种 `||`，要把问题暴露出来。
+      - 做根因修复，用正确逻辑直接覆盖，不要打补丁，禁止写否定的否定，直接写肯定性的描述。
+      - 创建的临时目录、草稿、渲染副本、测试副本、缓存和中间文件必须在对应工作结束后删除。交付前检查本任务使用的临时位置，仅保留用户明确要求的正式交付物和必要源文件。
 
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'

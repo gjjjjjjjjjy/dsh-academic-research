@@ -21,6 +21,7 @@ import {
   buildInstruction,
   mergeInstruction,
   partialInstruction,
+  withCitationRepair,
   withRepair,
 } from './prompt.ts';
 import {
@@ -335,26 +336,29 @@ class Runner {
   }
 }
 
+/** One assembled draft: checkpoint text, resolved citations, and citation problems. */
+interface AssembleOutcome {
+  readonly text: string;
+  readonly resolved: readonly ResolvedRef[];
+  readonly problems: readonly string[];
+}
+
 /**
- * Resolve one draft's citations, then replace the preserved section with the
- * text copied from them.
+ * Resolve one citation list into the verbatim text it names.
  *
- * A draft with no preserved section is returned unchanged: V1 reports that gap
- * so the citation-only rule and the missing section are not both reported.
+ * @param bodyLines - the `[invariants]` body exactly as the model wrote it.
+ * @param index - the region's source index.
+ * @param carry - the fragments already carried, for de-duplication.
+ * @returns the resolved citations and every citation problem found.
  */
-function assembleCitations(
-  draft: string,
+function resolveCitations(
+  bodyLines: readonly string[],
   index: SourceIndex,
   carry: CarriedOutcome,
-): { readonly text: string; readonly resolved: readonly ResolvedRef[]; readonly problems: readonly string[] } {
-  const parsed = parseSections(draft);
-  if (!parsed.sections.some((section) => section.key === 'invariants')) {
-    return { text: draft, resolved: [], problems: [] };
-  }
-
+): { readonly resolved: readonly ResolvedRef[]; readonly problems: readonly string[] } {
   const problems: string[] = [];
   const resolved: ResolvedRef[] = [];
-  const parsedRefs = parseRefs(sectionBody(parsed, 'invariants'));
+  const parsedRefs = parseRefs(bodyLines);
   problems.push(...parsedRefs.problems);
   if (parsedRefs.refs.length === 0 && !parsedRefs.none && parsedRefs.problems.length === 0) {
     problems.push('[invariants] 既没有来源引用也没有 (none)');
@@ -368,9 +372,72 @@ function assembleCitations(
     if (isSubsumed(outcome.resolved, carry.kept)) continue;
     resolved.push(outcome.resolved);
   }
+  return { resolved, problems };
+}
 
+/**
+ * Resolve one draft's citations, then replace the preserved section with the
+ * text copied from them.
+ *
+ * A draft with no preserved section is returned unchanged: V1 reports that gap
+ * so the citation-only rule and the missing section are not both reported.
+ */
+function assembleCitations(
+  draft: string,
+  index: SourceIndex,
+  carry: CarriedOutcome,
+): AssembleOutcome {
+  const parsed = parseSections(draft);
+  if (!parsed.sections.some((section) => section.key === 'invariants')) {
+    return { text: draft, resolved: [], problems: [] };
+  }
+  const { resolved, problems } = resolveCitations(
+    sectionBody(parsed, 'invariants'),
+    index,
+    carry,
+  );
   return {
     text: replaceSection(draft, 'invariants', buildInvariantBody(carry, resolved)),
+    resolved,
+    problems,
+  };
+}
+
+/**
+ * The citation lines of a citation-only reply.
+ *
+ * The repair asks for the list alone. A model may answer with a whole checkpoint
+ * instead; its `[invariants]` section carries the same citations, so it is read
+ * as the list rather than failing the compaction on shape alone.
+ *
+ * @param reply - the repair call's text.
+ * @returns the lines to parse as citations.
+ */
+function citationLines(reply: string): readonly string[] {
+  const parsed = parseSections(reply);
+  return parsed.sections.some((section) => section.key === 'invariants')
+    ? sectionBody(parsed, 'invariants')
+    : reply.split('\n');
+}
+
+/**
+ * Swap in the citations the model corrected, keeping the first draft's sections.
+ *
+ * @param base - the assembled first draft (its other five sections already pass).
+ * @param reply - the repair call's citation list.
+ * @param index - the region's source index.
+ * @param carry - the fragments already carried.
+ * @returns the re-assembled checkpoint and any remaining citation problem.
+ */
+function repairCitations(
+  base: AssembleOutcome,
+  reply: string,
+  index: SourceIndex,
+  carry: CarriedOutcome,
+): AssembleOutcome {
+  const { resolved, problems } = resolveCitations(citationLines(reply), index, carry);
+  return {
+    text: replaceSection(base.text, 'invariants', buildInvariantBody(carry, resolved)),
     resolved,
     problems,
   };
@@ -421,15 +488,37 @@ async function singlePass(
   const instruction = buildInstruction(academicResearch);
 
   const first = assembleCitations(await runner.ask(document, instruction), index, carry);
-  let problems = [...first.problems, ...audit(first.text, carry.kept, first.resolved)];
-  if (problems.length === 0) return first.text;
+  const structural = audit(first.text, carry.kept, first.resolved);
+  if (first.problems.length === 0 && structural.length === 0) return first.text;
+
+  /* 引用类失败：其它五节已经合格，只让模型重发引用清单，再装回第一次草稿。
+     完整重做要重写整篇检查点（真实运行里一次 8 万字符），而修复调用正是断流与空正文
+     最常发生的一步；只重发引用把这一步的输出压到几十行。非引用类失败仍走完整重做。 */
+  if (first.problems.length > 0 && structural.length === 0) {
+    const repaired = repairCitations(
+      first,
+      await runner.ask(document, withCitationRepair(instruction, first.problems)),
+      index,
+      carry,
+    );
+    const failures = [...repaired.problems, ...audit(repaired.text, carry.kept, repaired.resolved)];
+    if (failures.length === 0) return repaired.text;
+    throw new Error(
+      `dsh-academic-research: 摘要未通过检查，且一次修复仍未通过：\n- ${failures.join('\n- ')}`
+      + `\n第一次输出开头：${draftExcerpt(first.text)}`
+      + `\n修复输出开头：${draftExcerpt(repaired.text)}`,
+    );
+  }
 
   const repaired = assembleCitations(
-    await runner.ask(document, withRepair(instruction, withDraftNote(problems, first.text))),
+    await runner.ask(
+      document,
+      withRepair(instruction, withDraftNote([...first.problems, ...structural], first.text)),
+    ),
     index,
     carry,
   );
-  problems = [...repaired.problems, ...audit(repaired.text, carry.kept, repaired.resolved)];
+  const problems = [...repaired.problems, ...audit(repaired.text, carry.kept, repaired.resolved)];
   if (problems.length === 0) return repaired.text;
 
   throw new Error(
