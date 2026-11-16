@@ -177,9 +177,9 @@
         recursive: false
         summaryLanguage: auto
         # 压力阈值必须落在真实输入上限之内：
-        #   thresholdRatio x contextWindow < provider上限 - maxTokens
-        # 全局默认按 deepseek-flash 标定：
-        #   0.7 x 1000000 = 700000 < 1048576 - 65536 = 983040
+        #   thresholdRatio x contextWindow < provider上限 - maxTokens - headroomTokens
+        # 全局默认按 deepseek-flash 标定（headroomTokens 默认 65536）：
+        #   0.7 x 1000000 = 700000 < 1048576 - 65536 - 65536 = 917504
         thresholdRatio: 0.7
         retainRatio: 0.16
         # 摘要输出上限。下限 32768 是实测的：8192 会把六节摘要截断，触发 fail-closed 的

@@ -23,7 +23,7 @@
 #
 # Pro-only keys such as `faithful` and `customInstruction` are ignored rather
 # than rejected: schemastery passes unknown keys through, this backend reads
-# only the keys it declares, and only the ten base policy keys reach the
+# only the keys it declares, and only the eleven base policy keys reach the
 # inherited engine. Dropping them is optional.
 
 # ── 部署形态 B：host 平面直接挂载 ─────────────────────────────────────────

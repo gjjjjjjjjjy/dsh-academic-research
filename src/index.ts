@@ -40,6 +40,7 @@ const modelPolicy = z.object({
   provider: z.string().required(),
   model: z.string().required(),
   thresholdRatio: num,
+  headroomTokens: z.number().step(1).min(0),
   retainRatio: num,
   retainTokens: z.number().step(1).min(0),
   summarizationProvider: str,
@@ -61,6 +62,7 @@ const modelPolicy = z.object({
 function baseConfigOf(config: AcademicResearchCompactionConfig): BasicCompactionConfig {
   const base: BasicCompactionConfig = {};
   if (config.thresholdRatio !== undefined) base.thresholdRatio = config.thresholdRatio;
+  if (config.headroomTokens !== undefined) base.headroomTokens = config.headroomTokens;
   if (config.retainRatio !== undefined) base.retainRatio = config.retainRatio;
   if (config.retainTokens !== undefined) base.retainTokens = config.retainTokens;
   if (config.summarizationProvider !== undefined) {
@@ -84,11 +86,11 @@ function resolveLanguage(value: string): SummaryLanguage {
 /**
  * The smallest summary budget this backend runs on.
  *
- * Measured, not chosen: at the base engine's inherited default of 8192 the
- * six-section checkpoint was truncated on 9 of 9 real compaction attempts
- * (`summarization truncated at the token cap`), and V4 then refused every one.
- * A deployment that leaves the key unset inherits exactly that broken default,
- * so it is rejected at construction instead of failing on every compaction.
+ * Measured, not chosen: at 8192 the six-section checkpoint was truncated on 9
+ * of 9 real compaction attempts (`summarization truncated at the token cap`),
+ * and V4 then refused every one. The base default is now 65536, but the floor
+ * is still enforced explicitly so it does not depend on a default that can
+ * change independently of this backend.
  */
 const MIN_MAX_TOKENS = 32768;
 
@@ -111,8 +113,8 @@ export function assertMaxTokens(config: AcademicResearchCompactionConfig): void 
     if (budget === undefined) {
       if (index > 0) continue; // a policy without a budget inherits the top-level one
       throw new Error(
-        `dsh-academic-research: maxTokens must be set (>= ${MIN_MAX_TOKENS}); the inherited default of 8192 `
-        + 'truncates the six-section checkpoint, which fails every compaction',
+        `dsh-academic-research: maxTokens must be set (>= ${MIN_MAX_TOKENS}); this backend `
+        + 'requires an explicit summary budget rather than inheriting the base default',
       );
     }
     if (budget < MIN_MAX_TOKENS) {
@@ -148,6 +150,7 @@ export class AcademicResearchCompactionEngine extends BasicCompactionEngine {
 
   static override Config = z.object({
     thresholdRatio: num,
+    headroomTokens: z.number().step(1).min(0),
     retainRatio: num,
     retainTokens: z.number().step(1).min(0),
     summarizationProvider: str,

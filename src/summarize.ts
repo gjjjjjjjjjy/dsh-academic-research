@@ -54,9 +54,6 @@ import type {
   SummaryResult,
 } from './types.ts';
 
-/** The engine's own name, used as the plugin source tag on every call. */
-const PLUGIN = 'dsh-academic-research';
-
 /**
  * The first thing every compaction call says, before the region and before the
  * long contract.
@@ -307,7 +304,7 @@ class Runner {
       model: this.target.model,
       messages: [
         ...this.head,
-        createUserMessage({ content, source: { kind: 'plugin', plugin: PLUGIN } }),
+        createUserMessage({ content, source: { kind: 'user' } }),
       ],
       maxTokens: this.base.maxTokens,
       sessionId: this.agent.session.id,

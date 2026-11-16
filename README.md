@@ -216,7 +216,7 @@ reasoning、正文为空」和传输层断流的一步；结构或内容类失�
 
 > 换成别的后端时，那个后端自己的配置键在这里不被识别。schemastery 会**原样透传**未知键
 > （实测：未知的布尔键会留在解析结果里，既不报错也不剥离），而本后端只读取自己声明的键、
-> 并且只把 10 个基础键交给基类，所以留着它们不会报错、也不起作用。可以顺手删掉以免误读。
+> 并且只把 11 个基础键交给基类，所以留着它们不会报错、也不起作用。可以顺手删掉以免误读。
 
 ### 部署形态 B：host 平面直接挂载
 
@@ -314,6 +314,7 @@ cp -R <包>/presets/academic-research ~/.dsh/.agent-presets/
 | `chunkMessages` | `40` | 分块时每块的消息数（只在 `recursive` 打开时有意义） |
 | `domainExtra` | `''` | 追加到领域包的保留提示（只追加） |
 | `thresholdRatio` | 继承官方 | 触发压缩的上下文窗口比例 |
+| `headroomTokens` | 继承官方（65536） | 输出预留之外的额外压力余量；0.2.2 新增，本后端原样透传 |
 | `retainRatio` / `retainTokens` | 继承官方 | 保留窗口（二者互斥） |
 | `maxTokens` | **必填**（未设或 <32768 在启动时抛错） | 摘要输出上限。下限 32768，本仓部署片段用 65536，见下 |
 | `summarizationProvider` / `summarizationModel` | `''` | 留空则复用会话路由模型 |
@@ -321,9 +322,9 @@ cp -R <包>/presets/academic-research ~/.dsh/.agent-presets/
 | `modelPolicies` | — | 逐 provider/model 覆盖 |
 | `auto` | `true` | 自动压缩 |
 
-压力阈值必须落在真实输入上限内：`thresholdRatio × contextWindow < provider 上限 − maxTokens`。
+压力阈值必须落在真实输入上限内：`thresholdRatio × contextWindow < provider 上限 − maxTokens − headroomTokens`。
 
-> ⚠️ **`maxTokens` 不要留默认的 8192。** 六节摘要比官方模板长得多；实测 8192 下压缩
+> ⚠️ **`maxTokens` 必须显式设置；旧版的 8192 默认会失败。** 六节摘要比官方模板长得多；实测 8192 下压缩
 > **9/9 全部失败**，错误是 `summarization truncated at the token cap (incomplete checkpoint)`——
 > 被 V4 正确拦下，但那段时间里会话**完全没有压缩**。本仓部署片段用 **65536**。
 >
@@ -333,8 +334,8 @@ cp -R <包>/presets/academic-research ~/.dsh/.agent-presets/
 > 且不会因为用不满而多花钱——生成到 `stop` 就停。
 >
 > 这一项**在构造时强制**：`maxTokens` 未设置、或顶层与 `modelPolicies` 里的值低于 32768，
-> 插件会直接抛错而不启动。理由同上——继承基础引擎的 8192 是一个已知必坏的默认值，
-> 与其让它在运行时把每次压缩都打掉，不如在装配阶段就暴露出来。
+> 插件会直接抛错而不启动。理由同上——基础引擎的默认值会随宿主变化（旧版 8192 已证实必坏），
+> 不能作为本后端的隐式契约。
 
 ---
 
@@ -347,7 +348,7 @@ cp -R <包>/presets/academic-research ~/.dsh/.agent-presets/
 > ⚠️ **默认部署把它关掉（`recursive: false`）。** 递归分块把一次压缩变成 **N+1 次完整模型
 > 调用**——每块一次、合并再一次，每次实测约 2 分钟；一次真实 `/compact` 因此在
 > `chunkMessages: 40`（179 条消息 → 4–5 块）下跑了 **593 秒**才失败。区段本身有
-> `thresholdRatio` 兜底（`≤ 0.7 × contextWindow = 700000`，落在 `1048576 − maxTokens`
+> `thresholdRatio` 兜底（`≤ 0.7 × contextWindow = 700000`，落在 `1048576 − maxTokens − headroomTokens`
 > 之内），官方 `compaction-basic` 也从不分块。
 >
 > 真要打开时**别用默认的 40**：每块都是一整次模型调用，`chunkMessages` 直接乘在耗时上。
@@ -410,7 +411,7 @@ cp -R <包>/presets/academic-research ~/.dsh/.agent-presets/
 - **契约类型是镜像的。** 已装的 `@deepseek-ai/dsh-compaction-basic` 既不从根导出
   `SummarizationInput` / `SummaryResult`，其 `"./src/*"` 子路径也指向未发布的文件，因此本包镜像了
   这两个类型，只依赖 `dsh-llm` 的根导出。**处置**：宿主升级后重新核对镜像。
-- **存在 API 漂移。** 已装的 `0.1.5-rc.2` 契约中 `SummarizationInput` **没有** `system` 字段
+- **存在 API 漂移。** 当前 `0.2.2-rc.1` 契约中 `SummarizationInput` **没有** `system` 字段
   （system 头是 `messages[0]`）；按 `0.1.0-rc.6` 旧契约写的镜像带 `system`，对当前运行时不成立。
 - **自带预设是内置 `standard` 的整份拷贝**（另加压缩后端与 `skills/` 两处改动）。这是
   `dsh-agent-presets` 认可的 shipped 变体做法，代价是**不随 dsh 升级自动更新**。**处置**：升级 dsh 后
@@ -456,7 +457,8 @@ cp -R "$(npm root -g)/@deepseek-ai/dsh/node_modules/@deepseek-ai/." node_modules
 
 ## 兼容性
 
-- 针对 `dsh` 的 `@deepseek-ai/dsh-compaction-basic@0.1.5-rc.2`
+- 运行环境：Node >= 24.9（DSH 0.2.2 的要求）。
+- 针对 `dsh` 的 `@deepseek-ai/dsh-compaction-basic@0.2.2-rc.1`
   （`SummarizationInput` = `{ tools?, messages }`，`publish/` 无 `src/`）开发与类型检查。
 - 继承官方全部压力 / 保留 / token 计量 / 事务逻辑，只重写 `summarize()` 钩子。
 - License: MIT

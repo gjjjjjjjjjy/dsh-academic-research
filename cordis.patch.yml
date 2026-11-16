@@ -23,9 +23,9 @@
       recursive: false
       chunkMessages: 160
       # Pressure must land inside the real input limit:
-      #   thresholdRatio x contextWindow < provider limit - maxTokens
-      # Calibrated for deepseek-flash:
-      #   0.7 x 1000000 = 700000 < 1048576 - 65536 = 983040
+      #   thresholdRatio x contextWindow < provider limit - maxTokens - headroomTokens
+      # Calibrated for deepseek-flash (headroomTokens defaults to 65536):
+      #   0.7 x 1000000 = 700000 < 1048576 - 65536 - 65536 = 917504
       thresholdRatio: 0.7
       retainRatio: 0.16
       # Floor is 32768 (measured: 8192 truncates the six-section checkpoint). 65536 leaves

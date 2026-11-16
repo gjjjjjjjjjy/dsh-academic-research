@@ -11,7 +11,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { ResolvedConfig } from '@deepseek-ai/dsh-compaction-basic';
-import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { ToolCallId, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm';
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
 import { describe, expect, it } from 'vitest';
 
@@ -39,6 +39,7 @@ import {
 
 const BASE: ResolvedConfig = {
   thresholdRatio: 0.7,
+  headroomTokens: 65536,
   retainRatio: 0.16,
   summarizationProvider: '',
   summarizationModel: '',
@@ -167,6 +168,24 @@ describe('dsh-academic-research', () => {
       expect(calls()).toBe(1);
     },
   );
+
+  it('把 DSH 0.2.2 的 tool-role 消息渲染为可引用的来源', () => {
+    const messages = [
+      createUserMessage({ content: [{ type: 'text', text: '读取文件' }], source: { kind: 'user' } }),
+      createToolResultMessage({
+        callId: ToolCallId('call-1'),
+        content: [{ type: 'text', text: 'result line' }],
+        isError: true,
+      }),
+    ];
+
+    const index = buildSourceIndex(messages);
+
+    expect(index[1]?.role).toBe('tool');
+    expect(index[1]?.blocks[0]?.header).toBe('tool-result id=call-1 isError=true');
+    expect(index[1]?.lines).toEqual(['result line']);
+    expect(renderUnits(index)).toContain('result line');
+  });
 
   it('第一次失败只修复一次，修复成功则提交', async () => {
     const missingField = replyWith('- S1:L1-L4', GOOD_LEDGER.replace('result: accuracy=81.3%\n', ''));

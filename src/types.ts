@@ -16,7 +16,7 @@ import type { ContentBlock, Message, TokenUsage, ToolSchema } from '@deepseek-ai
  * at, so a consumer cannot import them; mirroring depends only on `dsh-llm`
  * root exports, which are published.
  *
- * The installed 0.1.5-rc.2 shape has no `system` field: the derived system
+ * The installed 0.2.2-rc.1 shape has no `system` field: the derived system
  * head, when present, is `messages[0]`. A mirror taken from the older
  * 0.1.0-rc.6 shape still carries one, so that mirror does not typecheck
  * against this runtime.

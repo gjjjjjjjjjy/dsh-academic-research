@@ -101,12 +101,11 @@ function renderContent(content: readonly ContentBlock[], out: SourceBlock[]): vo
           lines: block.arguments.split('\n'),
         });
         break;
-      case 'tool-result':
-        out.push({
-          header: `tool-result id=${block.toolCallId} isError=${block.isError === true}`,
-          lines: [],
-        });
-        renderContent(block.content, out);
+      case 'tool-addition':
+        out.push({ header: `tool-addition name=${block.toolName}`, lines: [] });
+        break;
+      case 'tool-removal':
+        out.push({ header: `tool-removal name=${block.toolName}`, lines: [] });
         break;
       case 'image':
         out.push({ header: 'image', lines: [] });
@@ -135,6 +134,12 @@ export function buildSourceIndex(messages: readonly Message[]): SourceIndex {
   let ordinal = 1;
   for (const message of messages) {
     const blocks: SourceBlock[] = [];
+    if (message.role === 'tool') {
+      blocks.push({
+        header: `tool-result id=${message.toolCallId} isError=${message.isError === true}`,
+        lines: [],
+      });
+    }
     renderContent(message.content, blocks);
     units.push({
       id: `S${ordinal}`,
