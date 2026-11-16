@@ -15,21 +15,12 @@
   - id: academic-research
     name: 'dsh-academic-research'
     config:
-      domain: general
-      summaryLanguage: auto
-      # One call, never chunked: each chunk is a full model call (~2 minutes
-      # measured) on top of the merge, and the region is already bounded by
-      # thresholdRatio. Same shape as the built-in compaction-basic.
-      recursive: false
-      chunkMessages: 160
+      # The checkpoint is built by the program from the session log, with no
+      # model call; only the base engine's pressure and retention policy apply.
       # Pressure must land inside the real input limit:
       #   thresholdRatio x contextWindow < provider limit - maxTokens - headroomTokens
-      # Calibrated for deepseek-flash (headroomTokens defaults to 65536):
+      # Calibrated for deepseek-flash (maxTokens and headroomTokens at the base default 65536):
       #   0.7 x 1000000 = 700000 < 1048576 - 65536 - 65536 = 917504
       thresholdRatio: 0.7
       retainRatio: 0.16
-      # Floor is 32768 (measured: 8192 truncates the six-section checkpoint). 65536 leaves
-      # room for the reasoning tokens that share this budget — a real call spent 20344 of
-      # its 24273 output tokens on reasoning.
-      maxTokens: 65536
       auto: true

@@ -4,138 +4,29 @@
  * Extends the official `BasicCompactionEngine` and overrides only the
  * documented `summarize()` hook, so pressure, retention, token metering, and
  * the compaction transaction stay inherited. What changes is the checkpoint:
- * a six-section research handover whose precisely-preserved section the
- * program copies verbatim from source ranges the model cited.
+ * the program builds it from the session log without a model call — the user's
+ * words and the assistant's prose verbatim and attributed, one line per tool
+ * call with the seq its result is read back by (see `checkpoint.ts`).
+ *
+ * Configuration is exactly the base engine's. Keys of the earlier model-written
+ * checkpoint (`domain`, `summaryLanguage`, `recursive`, `chunkMessages`,
+ * `domainExtra`) are rejected by the base engine's own key validation.
  *
  * @module dsh-academic-research
  */
 
 import type { Agent } from '@deepseek-ai/dsh-agent';
-import type { BasicCompactionConfig } from '@deepseek-ai/dsh-compaction-basic';
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic';
-import type { Context } from '@deepseek-ai/cordis';
-import z from '@deepseek-ai/schemastery';
 
-import { resolveDomain } from './domains.ts';
-import { summarizeRegion } from './summarize.ts';
-import type {
-  ResolvedAcademicResearchConfig,
-  AcademicResearchCompactionConfig,
-  SummarizationInput,
-  SummaryLanguage,
-  SummaryResult,
-} from './types.ts';
-
-export type {
-  ResolvedAcademicResearchConfig,
-  AcademicResearchCompactionConfig,
-  ScienceDomain,
-  SummaryLanguage,
-} from './types.ts';
-
-const num = z.number();
-const str = z.string();
-
-const modelPolicy = z.object({
-  provider: z.string().required(),
-  model: z.string().required(),
-  thresholdRatio: num,
-  headroomTokens: z.number().step(1).min(0),
-  retainRatio: num,
-  retainTokens: z.number().step(1).min(0),
-  summarizationProvider: str,
-  summarizationModel: str,
-  maxTokens: z.number().step(1).min(1),
-  compactionRetries: z.number().step(1).min(0),
-  maxOverflowRetries: z.number().step(1).min(0),
-});
+import { buildCheckpoint, regionEntries } from './checkpoint.ts';
+import type { SummarizationInput, SummaryResult } from './types.ts';
 
 /**
- * Keys owned by `BasicCompactionEngine`. Its constructor validates its config
- * against `BasicCompactionConfig` and throws on an unknown key, so additive
- * keys are stripped before `super()` and resolved separately.
- *
- * The split is written field by field so the compiler checks every policy key:
- * a key list would silently drop a field it omitted or misspelled, and the base
- * would then run on its default instead of the configured value.
+ * Recorded as the checkpoint's provider/model on `compaction/summary`. No
+ * model produced it, so the record names the program instead of a route.
  */
-function baseConfigOf(config: AcademicResearchCompactionConfig): BasicCompactionConfig {
-  const base: BasicCompactionConfig = {};
-  if (config.thresholdRatio !== undefined) base.thresholdRatio = config.thresholdRatio;
-  if (config.headroomTokens !== undefined) base.headroomTokens = config.headroomTokens;
-  if (config.retainRatio !== undefined) base.retainRatio = config.retainRatio;
-  if (config.retainTokens !== undefined) base.retainTokens = config.retainTokens;
-  if (config.summarizationProvider !== undefined) {
-    base.summarizationProvider = config.summarizationProvider;
-  }
-  if (config.summarizationModel !== undefined) base.summarizationModel = config.summarizationModel;
-  if (config.maxTokens !== undefined) base.maxTokens = config.maxTokens;
-  if (config.compactionRetries !== undefined) base.compactionRetries = config.compactionRetries;
-  if (config.maxOverflowRetries !== undefined) base.maxOverflowRetries = config.maxOverflowRetries;
-  if (config.modelPolicies !== undefined) base.modelPolicies = config.modelPolicies;
-  if (config.auto !== undefined) base.auto = config.auto;
-  return base;
-}
-
-/** Validate the configured summary language. */
-function resolveLanguage(value: string): SummaryLanguage {
-  if (value === 'en' || value === 'zh' || value === 'auto') return value;
-  throw new Error(`dsh-academic-research: unknown summaryLanguage "${value}" (allowed: en, zh, auto)`);
-}
-
-/**
- * The smallest summary budget this backend runs on.
- *
- * Measured, not chosen: at 8192 the six-section checkpoint was truncated on 9
- * of 9 real compaction attempts (`summarization truncated at the token cap`),
- * and V4 then refused every one. The base default is now 65536, but the floor
- * is still enforced explicitly so it does not depend on a default that can
- * change independently of this backend.
- */
-const MIN_MAX_TOKENS = 32768;
-
-/**
- * Refuse any configured summary budget the six-section checkpoint cannot fit in.
- *
- * The top-level `maxTokens` is required, and a per-route policy override may
- * only raise it. Both forms are checked because either one below the floor
- * reproduces the truncation incident.
- *
- * @param config - the raw engine configuration.
- */
-export function assertMaxTokens(config: AcademicResearchCompactionConfig): void {
-  const budgets: readonly (number | undefined)[] = [
-    config.maxTokens,
-    ...(config.modelPolicies ?? []).map((policy) => policy.maxTokens),
-  ];
-  for (const [index, budget] of budgets.entries()) {
-    const where = index === 0 ? 'maxTokens' : `modelPolicies[${index - 1}].maxTokens`;
-    if (budget === undefined) {
-      if (index > 0) continue; // a policy without a budget inherits the top-level one
-      throw new Error(
-        `dsh-academic-research: maxTokens must be set (>= ${MIN_MAX_TOKENS}); this backend `
-        + 'requires an explicit summary budget rather than inheriting the base default',
-      );
-    }
-    if (budget < MIN_MAX_TOKENS) {
-      throw new Error(
-        `dsh-academic-research: ${where} is ${budget}, below the measured floor of ${MIN_MAX_TOKENS}; `
-        + 'a smaller budget truncates the six-section checkpoint and fails every compaction',
-      );
-    }
-  }
-}
-
-/** Resolve the additive configuration to concrete values. */
-function resolveAcademicResearchConfig(config: AcademicResearchCompactionConfig): ResolvedAcademicResearchConfig {
-  return {
-    domain: resolveDomain(config.domain ?? 'general'),
-    summaryLanguage: resolveLanguage(config.summaryLanguage ?? 'auto'),
-    recursive: config.recursive ?? true,
-    chunkMessages: config.chunkMessages ?? 40,
-    domainExtra: config.domainExtra ?? '',
-  };
-}
+export const CHECKPOINT_PROVIDER = 'dsh-academic-research';
+export const CHECKPOINT_MODEL = 'program';
 
 /**
  * Registers as the single `ctx.compaction` provider for its realm.
@@ -146,59 +37,23 @@ function resolveAcademicResearchConfig(config: AcademicResearchCompactionConfig)
  * the same compaction decision.
  */
 export class AcademicResearchCompactionEngine extends BasicCompactionEngine {
-  static override inject = ['llm', 'tokenMeter', 'sessions'];
-
-  static override Config = z.object({
-    thresholdRatio: num,
-    headroomTokens: z.number().step(1).min(0),
-    retainRatio: num,
-    retainTokens: z.number().step(1).min(0),
-    summarizationProvider: str,
-    summarizationModel: str,
-    maxTokens: z.number().step(1).min(1),
-    compactionRetries: z.number().step(1).min(0),
-    maxOverflowRetries: z.number().step(1).min(0),
-    modelPolicies: z.array(modelPolicy),
-    auto: z.boolean(),
-    domain: str,
-    /* Allowed values: 'en' | 'zh' | 'auto'. schemastery v3 exposes no static
-       literal/union factory, so the value set is validated in resolveLanguage. */
-    summaryLanguage: str,
-    recursive: z.boolean(),
-    chunkMessages: z.number().step(1).min(1),
-    domainExtra: str,
-  });
-
-  /** Resolved additive configuration. */
-  readonly academicResearchConfig: ResolvedAcademicResearchConfig;
-
-  constructor(ctx: Context, config: AcademicResearchCompactionConfig = {}) {
-    assertMaxTokens(config);
-    super(ctx, baseConfigOf(config));
-    this.academicResearchConfig = resolveAcademicResearchConfig(config);
-    ctx.logger.info(
-      `[dsh-academic-research] registered as the ctx.compaction provider `
-      + `(domain=${this.academicResearchConfig.domain}, language=${this.academicResearchConfig.summaryLanguage}, `
-      + `recursive=${String(this.academicResearchConfig.recursive)}). `
-      + 'If startup fails with "already provided", a second ctx.compaction backend '
-      + 'is enabled in this same realm.',
-    );
-  }
-
   /**
    * The sole subclass hook, per the base engine's contract.
    *
    * @param input - the derived system head followed by the shadowed region.
-   * @param agent - supplies the routed target and session identity.
-   * @param signal - optional cancellation forwarded into every call.
-   * @returns the assembled six-section checkpoint.
+   * @param agent - the compacting agent; its session maps the region back to seqs.
+   * @returns the program-built checkpoint.
    */
-  protected override async summarize(
-    input: SummarizationInput,
-    agent: Agent,
-    signal?: AbortSignal,
-  ): Promise<SummaryResult> {
-    return summarizeRegion(this.ctx, this.config, this.academicResearchConfig, input, agent, signal);
+  protected override async summarize(input: SummarizationInput, agent: Agent): Promise<SummaryResult> {
+    let cut = 0;
+    while (cut < input.messages.length && input.messages[cut]?.role === 'system') cut += 1;
+    const region = input.messages.slice(cut);
+    const text = buildCheckpoint(agent.session.id, regionEntries(agent.session, region));
+    return {
+      summary: [{ type: 'text', text }],
+      provider: CHECKPOINT_PROVIDER,
+      model: CHECKPOINT_MODEL,
+    };
   }
 }
 

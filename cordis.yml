@@ -12,19 +12,13 @@
 #   - id: academic-research
 #     name: 'dsh-academic-research'
 #     config:
-#       domain: ml
-#       summaryLanguage: auto
-#       recursive: false      # one call; see README "递归分块"
-#       chunkMessages: 160
 #       thresholdRatio: 0.7
 #       retainRatio: 0.16
-#       maxTokens: 65536
 #       auto: true
 #
-# Pro-only keys such as `faithful` and `customInstruction` are ignored rather
-# than rejected: schemastery passes unknown keys through, this backend reads
-# only the keys it declares, and only the eleven base policy keys reach the
-# inherited engine. Dropping them is optional.
+# The config is exactly the base engine's: any other key (another backend's,
+# or this backend's earlier `domain` / `summaryLanguage` / `recursive` /
+# `chunkMessages` / `domainExtra`) is rejected at startup by the base engine.
 
 # ── 部署形态 B：host 平面直接挂载 ─────────────────────────────────────────
 #
@@ -36,11 +30,6 @@
 #   - id: academic-research
 #     name: 'dsh-academic-research'
 #     config:
-#       domain: general
-#       summaryLanguage: auto
-#       recursive: false      # one call; see README "递归分块"
-#       chunkMessages: 160
 #       thresholdRatio: 0.7
 #       retainRatio: 0.16
-#       maxTokens: 65536
 #       auto: true

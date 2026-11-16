@@ -1,7 +1,7 @@
 # dsh-academic-research
 
-> DeepSeek Harness 的**科研保真**上下文压缩后端：把长会话压成一份六节科研交接记录，
-> 其中「精确保留区」由**程序**按模型给出的来源范围**逐字复制**，不由模型重写。
+> DeepSeek Harness 的**科研保真**上下文压缩后端：检查点由**程序**从会话日志生成，**不调用模型**。
+> 用户原话与助手文字逐字保留、标明是谁说的；推理与工具输出移出窗口，但每条都留下读回用的 `seq`。
 
 [![dsh-plugin](https://img.shields.io/badge/dsh--plugin-compaction-4D6BFE?style=flat-square)](https://github.com/topics/dsh-plugin)
 
@@ -9,29 +9,48 @@
 
 ## 已实现 / 未实现
 
-包的最终目标是**一个完整的科研 agent**（见 [`docs/ROADMAP.md`](docs/ROADMAP.md)）。
-**版本 0 只做了其中一环：压缩后端。** 工作流的可调用入口与科研工具都不在这一版里。
+包的最终目标是**一个完整的科研 agent**（见 [`docs/ROADMAP.md`](docs/ROADMAP.md)）。目前实现的是压缩后端与工作流技能；
+科研工具不在其中。
 
 | | |
 |---|---|
-| **版本 0 已实现** | `ctx.compaction` 后端：六节科研交接记录、`[goal]` 的 `mainline:`/`progress:` 汇报字段、实验台账七字段、来源引用逐字复制、V1–V4 校验 + 一次修复、`general` / `ml` / `optics` 三个领域包。`[analysis]` 的 `decision:` 条目带 `state:`（`建议 / 已确认 / 已实现 / 已验证 / 已否认`）与 `basis:`，由 V1 校验格式 |
-| **随包附带，但不是功能入口** | `research-workflow` 技能（四种场景 + 决策包与实施卡两个模板）：由 `academic-research` 预设随包挂载（`presets/academic-research/skills/`），但**它是提示模板，不是功能入口**——没有对应的斜杠命令或工具 |
-| **尚未实现** | 工作流的可调用入口；文献检索与引用溯源、附件（PDF 等）解析、实验设计与统计检查、可复现性核对、跨会话科研记忆等科研工具。**本包当前不提供任何 `research_*` 之类的科研工具** |
-
-**版本 0 与同概念区其它包的区别只有一条：只做压缩后端 + 附带的提示模板，不做科研工具。**
-那是这一版的范围，不是最终目标——最终目标是完整的科研 agent。
+| **压缩后端** | `ctx.compaction` 的唯一提供方。检查点由程序生成：用户原话、助手文字逐字并标作者；工具调用一行、指向结果的 `seq`；读写过的文件清单；前次检查点逐字接上。不调用模型，因此不会因模型输出出错而失败 |
+| **随包附带的技能** | `research-workflow`（五种场景 + 决策包与实施卡两个模板），由 `academic-research` 预设随包挂载（`presets/academic-research/skills/`）。用户写 `/research-workflow <场景词>` 显式调用——这是宿主 `dsh-tool-skill` 自带的技能手势，**本包不注册斜杠命令、不提供工具**，技能本身仍是提示模板。入口已在 dsh 0.2.2-rc.1 源码上确认；**真实研究流程的验收尚未做**（[`docs/ROADMAP.md`](docs/ROADMAP.md) 阶段 2） |
+| **尚未实现** | 研究状态条目的出处核对（条目引用用户原话的 `seq`、由程序逐字核对）；文献检索与引用溯源、附件（PDF 等）解析、实验设计与统计检查、可复现性核对等科研工具。**本包当前不提供任何 `research_*` 之类的科研工具** |
 
 ---
 
 ## `research-workflow` 技能
 
-四种场景（研究梳理 / 实验设计 / 科研实现 / 实验复盘）与两种交接物（决策包 / 实施卡），
+五种场景（研究梳理 / 实验设计 / 科研实现 / 实验复盘 / 恢复与交接）与两种交接物（决策包 / 实施卡），
 位于 [`presets/academic-research/skills/research-workflow/`](presets/academic-research/skills/research-workflow/SKILL.md)。
-**它是提示模板，不是运行时**：不注册命令、不新增服务、不碰压缩引擎，产出直接进入既有六节，不建第二套台账。
+**它是提示模板，不是运行时**：不注册命令、不新增服务、不碰压缩引擎；产出写进研究状态记录（六节，见 [`docs/SUMMARY-SCHEMA.md`](docs/SUMMARY-SCHEMA.md) §2），不建第二套台账。
 
-> 这四种**场景**与 [`docs/SUMMARY-SCHEMA.md`](docs/SUMMARY-SCHEMA.md) §0.1 的四种**工作方式**
+> 这五种**场景**与 [`docs/SUMMARY-SCHEMA.md`](docs/SUMMARY-SCHEMA.md) §0.1 的四种**工作方式**
 > （研究整理 / 研究评议 / 实施推进 / 恢复与交接）是两套并存的叫法，不改名、不合并；
 > 逐条对应关系见 [`SKILL.md` §零](presets/academic-research/skills/research-workflow/SKILL.md)。
+
+### 调用
+
+在消息里写 `/research-workflow`，后面跟场景词和材料：
+
+```text
+/research-workflow 梳理 为什么 E3 在 test-v2 上掉点
+/research-workflow 设计 E4 是否要补同学习率的对照
+/research-workflow 实现 Q2 已确认的实施卡
+/research-workflow 复盘 E4
+/research-workflow 恢复 @<上一个会话>
+```
+
+- 这是 dsh 0.2.2-rc.1 宿主自带的技能手势（`dsh-tool-skill` 的 pre-step 监听器）：用户消息里以空白为界的
+  `/<技能名>` 命中一个用户可调用的技能时，宿主把技能全文作为指令上下文注入当轮，不靠模型自己想起来加载。
+  Web 输入框里输入 `/` 也能从建议里选（`dsh-client-ui-skill`）。
+- **名字后面要有空格或换行**：`/research-workflow设计` 不触发（手势要求名字两侧是空白），整行会作为普通文字发给模型。
+- 场景词：`梳理` / `设计` / `实现` / `复盘` / `恢复`（或 `交接`）。没写、且请求对不上唯一一个场景时，技能要求模型先问一句要哪一段。
+- `恢复` 配合 `@` 会话引用使用（`dsh-session-reference`，web profile 已挂载）：被引用会话以有界只读快照进入上下文，
+  只含双方文字与压缩检查点、**不含工具输出**，并被标为不可信背景。技能要求先用工具核对工作树、产物和作业状态，
+  输出核对表，再接着做。
+- 每次调用把技能全文（约 4.8k 字符）注入当轮一次；不调用时只占技能目录里的一行描述。
 
 **技能随预设一起走，装预设就等于装上它。** `academic-research` 预设的 `skill-filesystem` 行用
 `baseUrl`（预设自己的目录）挂载同目录下的 `skills/`，所以两种装法都带技能，不需要额外的挂载步骤；
@@ -54,132 +73,67 @@ ln -s <包>/presets/academic-research/skills/research-workflow ~/.dsh/skills/res
 
 ## 它解决什么问题
 
-长会话触发压缩时，官方 `dsh-compaction-basic` 的英文通用模板会把会话压成一段工程摘要。
-科研会话被这样压过之后，常见的损失是：**实验计划、进展、设计、结果之间的对应关系没了**，
-剩下的是一堆「做了优化、效果更好」的叙述；数值、公式、路径被模型顺手「整理」过。
+上一版让压缩模型把会话重写成一份六节科研交接记录。真实会话里这条路有三个问题：
 
-`dsh-academic-research` 改两件事：
+1. **经常压不出来**：一个真实会话 13 次压缩只成功 2 次——引用越界、模型把区段当成待继续的任务去调工具、
+   只出 reasoning 不出正文、区段超过模型上下文。失败时会话完全没有压缩，每次白等 30 秒到 10 分钟。
+2. **会改写「谁说的」**：整段重写时，助手的推测可以变成「当前假设」，一条判断可以被补成 `state: 已确认`
+   （实际发生过）。读的人分不清哪句是用户说的。
+3. **选错的留下来**：模型挑中的原文才被保留，一份成功检查点的保留区里有 goal 对象的三个历史版本、模型自己的思考原文、
+   孤立的代码行，并逐轮累积。
 
-1. **换结构**：输出固定六节，把「用什么算法做了什么工作得到什么效果」保留成**实验台账**，
-   并把已有分析、判断边界、未决问题分开写，避免把推断写成结论。
-2. **换保真方式**：精确保留区不再是「让模型抄一遍原文」，而是**模型只给来源范围，
-   程序按范围从输入里逐字取出原文**。模型没有机会改写被选中的数值。
-
-设计规范见 [`docs/SUMMARY-SCHEMA.md`](docs/SUMMARY-SCHEMA.md)。
+同类研究的结论一致：丢弃工具输出与模型总结效果相当、成本低得多；逐字保留对话、丢弃工具输出并可按需回查，
+多轮压缩后的事实回忆明显好于模型总结。设计依据与出处见 [`docs/SUMMARY-SCHEMA.md`](docs/SUMMARY-SCHEMA.md) §1.1。
 
 ---
 
-## 机制：模型选来源，程序复制原文
-
-送入压缩模型前，程序把待压区段渲染成带编号的原文，并保留原文本：
-
-```text
-[S7] role=user lines=4
-L1: E3 使用 test-v2 进行评价。
-L2: seed=42
-L3: accuracy=81.3%
-L4: checkpoint=/project/results/E3.pt
-```
-
-`S<n>` / `L<n>` 由程序分配。程序此时**不知道**这些内容是否重要，只知道每一行来自哪里。
-来源标题上的 `lines=<n>` 是该来源的行数，也是引用的上界：原文本身经常满是别的行号
-（diff 的 `@@ -18,6 +18,7 @@`、文件正文的 `75:` 前缀、对话里的「第 619 行」），实测有一批失败正是
-模型把这些行号或渲染出来的物理行数当成了 `L<n>`，引用越界、整次压缩作废。
-
-模型正常写其余五节，但 `[invariants]` 里**只写引用，不重写数值**：
+## 检查点长什么样
 
 ```markdown
-## [invariants] 精确保留区
-- S7:L1-L4
+本检查点由 dsh-academic-research 按固定规则从会话日志生成，没有调用模型改写。
+- 「用户」条目是用户原话，逐字保留。「助手」条目是助手当时写的文字，逐字保留；其中的结论、数值和状态没有经过核实，不是用户确认过的前提。
+- 推理、工具输出和注入上下文没有保留。需要原文时用 session_event_read 按 seq 读回（本会话 id：…），或重新读取文件、重新运行命令。
+- 工作区规则（AGENTS.md 等）由宿主在压缩后重新注入，不在本检查点里。
+- 研究状态以项目里的状态文件为准（如 .research/STATE.md）；接着做之前先核对真实代码、产物与作业状态。
+
+## [rounds] 压缩记录
+- 第 1 次：seq 9–3633，977 条消息；未保留：推理 777593 字符，工具输出 512259 字符（482 次调用），注入上下文 49 条
+
+## [files] 涉及的文件
+- src/index.ts（读）
+- .trace/proxy.mjs（读、写、改）
+
+## [record] 逐字记录
+[用户 · seq 9]
+更新当前插件支持新版的dsh
+
+[注入 · seq 10] agent-instructions · instructions（未保留）
+
+[助手 · seq 19]
+- 调用 bash：List workspace root contents → 结果 seq 23（1421 字符，未保留）
+- 调用 bash：Show plugin package.json and dsh checkout → 结果 seq 27（1370 字符，未保留）
+
+[助手 · seq 41]
+- 调用 read：src/index.ts → 结果 seq 4017（5159 字符，未保留）
 ```
 
-程序检查来源是否存在、行号是否有效，然后逐字取出原文填入最终摘要：
+（以上节选自一次真实区段的输出；`seq 4017` 是一个替换节点，它的 `sourceEventSeqs` 指向原始事件 `seq 43`。）
 
-```markdown
-## [invariants] 精确保留区
-来源：S7:L1-L4（本次压缩定位）
-原文：
-E3 使用 test-v2 进行评价。
-seed=42
-accuracy=81.3%
-checkpoint=/project/results/E3.pt
-```
-
-选择哪些内容重要，是模型的工作；把选中的原文准确复制出来，是程序的工作。
-**不能用「程序侧保真」把前一件事假定为已经解决。**
-
-前次检查点里已经明确保留的原文，作为**独立必保集合**由程序直接继续携带，不依赖模型重新选中它。
-其中值已被更晚记录取代的片段（`Tests  31 passed (31)` 之后又出现 `Tests  34 passed (34)`）按
-机械判据**淘汰**，并在当轮检查点里以 `前次检查点（已淘汰 · <键> 已有更新值）` 留痕一次；
-判据与边界见「[已知边界](#已知边界)」。
-
-### 这套机制能保证什么、不能保证什么
-
-| | |
+| 区段里的内容 | 检查点里 |
 |---|---|
-| **能保证** | 被选中的片段不会在这次搬运中被模型改写；前次检查点已保留的原文会继续携带（值被更晚记录取代的按机械判据淘汰并留痕） |
-| **不能保证** | 模型选中了所有重要片段；原记录本身正确；某个范围在语义上真的属于它声称的 E |
-| **不声称** | 「所有关键数据均已保留」——没有独立必保清单时，这只是「选中的都复制了」 |
+| 用户原话 | 逐字，标 `[用户 · seq]` |
+| 助手文字 | 逐字，标 `[助手 · seq]`，并声明未核实 |
+| 推理 | 不保留，计字符数 |
+| 工具调用 | 一行：工具名 + 一句说明 + 结果的 `seq`、字符数、是否出错 |
+| 工具输出 | 不保留，计字符数，按 `seq` 读回 |
+| 注入的上下文 | 一行出处；工作区规则由宿主在压缩后重新注入 |
+| 前次检查点 | 本格式：分节接上，不嵌套；其它格式（包括本包上一版的六节检查点）：整段逐字作为一条记录 |
 
----
+**读回**：预设挂载 `dsh-tool-session-query`，`session_event_read` 不传 `session_id` 就读当前会话，按 `seq` 返回完整事件。
+宿主以 `openAt: never` 打开查询服务时只有全文搜索不可用，按 `seq` 读取仍可用。
 
-## 六节结构
-
-输出恰好六节，顺序固定，`[key]` 恒为 ASCII 不翻译，标题标签与叙述跟随会话语言：
-
-```markdown
-## [goal] 当前目标与假设
-## [experiments] 实验台账
-## [evidence] 记录与来源
-## [analysis] 已有分析与判断边界
-## [invariants] 精确保留区
-## [open] 待决策问题与下一步
-```
-
-- `[goal]` 开头两条 ASCII 字段：`mainline:`（项目主线——整体目标、当前处于哪一步、该步的验收标准，
-  以 `docs/MAINLINE.md` 这类权威文件为准并保留出处）与 `progress:`（本次推进——从什么状态到什么状态、
-  还差什么）。检查点按**汇报视角**写，不是任务清单：没看过会话的人要先看懂项目在做什么、这一步推到哪了。
-- `[experiments]` 每条实验固定七个 ASCII 字段键：`purpose` / `design` / `config` /
-  `status` / `result` / `artifacts` / `conclusion`；缺值写 `—`，无条目写 `(none)`。
-  结果**不强制**写成 `value±err`：有 `±` 才保留 `±`，没有就写「不确定度未记录」，不补成 `±0`。
-- `[analysis]` 用 `decision:` / `judgement:` 两个槽位：`decision:` 收纳已提出的方案及其状态
-  （`state:` 五词之一 + `basis:`，状态为 `建议` 时还要 `question:` 指向 `[open]` 里的 `Q<n>`）；
-  `judgement:` 放解释、分析、推断。**这一节是已有分析的交接区，不是压缩模型的推理区。**
-- `[open]` 输出待决策问题时用固定的 `Q<n>` 数据包，不预设正确答案。
-
-压缩模型在整个过程中**不新增科研结论、不替用户选择路线、不编造指标或证据**。
-
----
-
-## 领域包
-
-`domain` 只切换**保留词汇**，不改六节骨架：
-
-| 值 | 补充的保留重点 |
-|---|---|
-| `general` | 关键参数、样本/输入、评价方式和产物 |
-| `ml` | 模型与权重、数据版本与划分、训练参数、精度、seed、评测定义、资源与 processor 信息 |
-| `optics` | 波长、偏振、几何/材料、测量或仿真条件、相机与标定记录、不确定度描述 |
-
-`domainExtra` 只**追加**保留提示，不覆盖基础保真规则。
-
----
-
-## 四项检查与一次修复
-
-| 检查 | 范围 |
-|---|---|
-| **V1 结构** | 六个键完整、唯一、顺序正确；实验具有七字段；没有用空白替代 `—`/`(none)`；`[invariants]` 草稿只含来源引用 |
-| **V2 原文** | 独立必保集合（前次检查点已保留的原文）逐字出现在最终摘要；本次引用全部可解析且原文逐字出现 |
-| **V3 数值绑定** | 被选中的范围必须含实验归属或指标/单位/路径标识；只含裸数字的切片判失败并要求扩大范围 |
-| **V4 截断** | 接口报截断、返回空内容或明显不完整时，不当成成功摘要 |
-
-失败后**携缺项修复一次**；修复仍不过就抛错，**不提交失败摘要，不回退普通摘要，不做多轮自我修复**。
-这一次修复按失败类型换形状：只有引用不合法（其余五节已合格）时，第二次调用**只重发 `[invariants]` 的引用
-清单**，程序把它装回第一次草稿并重新校验——完整重做要重写整篇检查点，而修复调用正是出现过「只回
-reasoning、正文为空」和传输层断流的一步；结构或内容类失败仍要求完整重做六节。
-
-按 Schema §4.2，**没有跳过保真校验的生产开关**。
+**研究状态不在检查点里**：六节研究状态（目标、实验台账、证据、分析、保留原文、待决问题）由工作中的 agent
+在事情发生时写进项目的状态文件，规则见 [`docs/SUMMARY-SCHEMA.md`](docs/SUMMARY-SCHEMA.md) §2。压缩只搬运原话，不生成也不改写它。
 
 ---
 
@@ -196,13 +150,8 @@ reasoning、正文为空」和传输层断流的一步；结构或内容类失�
     - id: academic-research
       name: 'dsh-academic-research'
       config:
-        domain: ml
-        summaryLanguage: auto
-        recursive: false
-        chunkMessages: 160
         thresholdRatio: 0.7
         retainRatio: 0.16
-        maxTokens: 65536
         auto: true
 ```
 
@@ -214,9 +163,9 @@ reasoning、正文为空」和传输层断流的一步；结构或内容类失�
   disabled: true
 ```
 
-> 换成别的后端时，那个后端自己的配置键在这里不被识别。schemastery 会**原样透传**未知键
-> （实测：未知的布尔键会留在解析结果里，既不报错也不剥离），而本后端只读取自己声明的键、
-> 并且只把 11 个基础键交给基类，所以留着它们不会报错、也不起作用。可以顺手删掉以免误读。
+> 配置只有基础引擎的键。别的后端的键、以及本包上一版的 `domain` / `summaryLanguage` / `recursive` /
+> `chunkMessages` / `domainExtra`，都会被基础引擎的键校验拒绝（`BasicCompactionConfig: unknown key "…"`），启动失败。
+> 换后端或升级本包时要把这些键删掉。
 
 ### 部署形态 B：host 平面直接挂载
 
@@ -229,10 +178,8 @@ reasoning、正文为空」和传输层断流的一步；结构或内容类失�
 - id: academic-research
   name: 'dsh-academic-research'
   config:
-    domain: general
     thresholdRatio: 0.7
     retainRatio: 0.16
-    maxTokens: 65536
 ```
 
 ### 装包
@@ -258,7 +205,8 @@ dsh plugin --profile <profile> add /绝对路径/dsh-academic-research
 ### 自带 agent 预设
 
 包里带一个装完即可在设置里选用的预设：`academic-research`，显示名「科研模式」。它等于内置
-`standard` 的整份 assembly，改动只有三处：压缩后端换成 `dsh-academic-research`（领域包 `ml`）、
+`standard` 的整份 assembly，改动只有四处：压缩后端换成 `dsh-academic-research`、
+挂上 `dsh-tool-session-query`（按 `seq` 读回被压掉的事件，见下文）、
 `skill-filesystem` 行挂上预设自带的 `skills/`（`research-workflow`，见上文）、`persona` 行写入
 **科研硬性要求**（长程 agent 中默认不新增 hash／冻结 contract／baseline／gate；不写兜底分支；
 做根因修复；临时产物在对应工作结束后删除等，见 `presets/academic-research/agent.cordis.yml`）。
@@ -306,130 +254,42 @@ cp -R <包>/presets/academic-research ~/.dsh/.agent-presets/
 
 ## 配置
 
-| 配置 | 默认 | 含义 |
-|---|---|---|
-| `domain` | `general` | `general` / `ml` / `optics` |
-| `summaryLanguage` | `auto` | `en` / `zh` / `auto`；`auto` 跟随用户自然语言，避免被英文代码和日志带偏 |
-| `recursive` | `true` | 大区段先分块摘要再合并。**实测代价很大，本仓所有部署片段都关掉它**，见下 |
-| `chunkMessages` | `40` | 分块时每块的消息数（只在 `recursive` 打开时有意义） |
-| `domainExtra` | `''` | 追加到领域包的保留提示（只追加） |
-| `thresholdRatio` | 继承官方 | 触发压缩的上下文窗口比例 |
-| `headroomTokens` | 继承官方（65536） | 输出预留之外的额外压力余量；0.2.2 新增，本后端原样透传 |
-| `retainRatio` / `retainTokens` | 继承官方 | 保留窗口（二者互斥） |
-| `maxTokens` | **必填**（未设或 <32768 在启动时抛错） | 摘要输出上限。下限 32768，本仓部署片段用 65536，见下 |
-| `summarizationProvider` / `summarizationModel` | `''` | 留空则复用会话路由模型 |
-| `compactionRetries` / `maxOverflowRetries` | 继承官方 | 压力与溢出重试 |
-| `modelPolicies` | — | 逐 provider/model 覆盖 |
-| `auto` | `true` | 自动压缩 |
+只有基础引擎 `dsh-compaction-basic` 的键，含义与默认值都继承官方：
+
+| 配置 | 含义 |
+|---|---|
+| `thresholdRatio` | 触发压缩的上下文窗口比例 |
+| `headroomTokens` | 输出预留之外的额外压力余量（默认 65536） |
+| `retainRatio` / `retainTokens` | 保留窗口（二者互斥） |
+| `maxTokens` | 基础引擎按它预留输出预算并计入压力；本后端不调用模型，不另设下限 |
+| `summarizationProvider` / `summarizationModel` / `compactionRetries` / `maxOverflowRetries` / `modelPolicies` | 基础引擎的键，本后端不调用模型，它们不影响检查点 |
+| `auto` | 自动压缩 |
 
 压力阈值必须落在真实输入上限内：`thresholdRatio × contextWindow < provider 上限 − maxTokens − headroomTokens`。
-
-> ⚠️ **`maxTokens` 必须显式设置；旧版的 8192 默认会失败。** 六节摘要比官方模板长得多；实测 8192 下压缩
-> **9/9 全部失败**，错误是 `summarization truncated at the token cap (incomplete checkpoint)`——
-> 被 V4 正确拦下，但那段时间里会话**完全没有压缩**。本仓部署片段用 **65536**。
->
-> **这个预算要和 reasoning 分。** 离线用真实模型复现一次 `input=142769` 的压缩：`out=24273` 里
-> **20344 是 reasoning**，正文只占约 4k。reasoning 一旦顶满上限，正文**就是空的**（实测同型：
-> `reasoning=32698/32768`、`content` 为空、`finish_reason=length`）。65536 给正文留出余量，
-> 且不会因为用不满而多花钱——生成到 `stop` 就停。
->
-> 这一项**在构造时强制**：`maxTokens` 未设置、或顶层与 `modelPolicies` 里的值低于 32768，
-> 插件会直接抛错而不启动。理由同上——基础引擎的默认值会随宿主变化（旧版 8192 已证实必坏），
-> 不能作为本后端的隐式契约。
-
----
-
-## 递归分块（默认关掉）
-
-区段超过 `chunkMessages` 时，先按块产出分段摘要，每块**各自给出自己那些来源的引用**；
-程序按本次编号逐块解析成原文，再把「已解析的原文」交给合并阶段，而不是只传一层模型转述。
-合并阶段的精确保留区同样由程序写入。
-
-> ⚠️ **默认部署把它关掉（`recursive: false`）。** 递归分块把一次压缩变成 **N+1 次完整模型
-> 调用**——每块一次、合并再一次，每次实测约 2 分钟；一次真实 `/compact` 因此在
-> `chunkMessages: 40`（179 条消息 → 4–5 块）下跑了 **593 秒**才失败。区段本身有
-> `thresholdRatio` 兜底（`≤ 0.7 × contextWindow = 700000`，落在 `1048576 − maxTokens − headroomTokens`
-> 之内），官方 `compaction-basic` 也从不分块。
->
-> 真要打开时**别用默认的 40**：每块都是一整次模型调用，`chunkMessages` 直接乘在耗时上。
->
-> 分块阶段还有一个已知行为：某一块的引用不合法就**立即**失败，不会把剩下的块跑完
-> （无法解析出必保原文就没有可提交的检查点；后面几次调用改变不了结果）。
 
 ---
 
 ## 已知边界
 
-以下边界分四类：**保真机制的范围**（机制本身不承诺什么）、**有意接受的取舍**、
-**与宿主组件的交互**、**与宿主契约的耦合**。它们都不是待修缺陷；每条的「处置」说明遇到时的
-正确做法，做法是按现有设计应对，**不是新增兼容层、框架或语义判断**（另见
-[`docs/ROADMAP.md`](docs/ROADMAP.md)）。
-
-### 保真机制的范围
-
-- **程序保证被选中片段的复制准确性，不保证选择完整性。** 选哪些内容由模型决定，程序只按引用
-  从原文逐字取出。因此「引用有效」既不等于「所选范围在语义上确实属于它标注的实验」，也不等于
-  「该选的都选了」。详见上文「这套机制能保证什么、不能保证什么」。
-- **V1 通过只说明格式合规**，不说明状态与原始证据一致，更不构成执行授权。
-  `basis: 用户已确认` 是模型的记录，不是程序的核实结果。
-- **没有独立必保清单时，不得报告「所有关键数据均已保留」。** 只有前次检查点中已明确保留的原文
-  构成独立必保集合，程序才有依据检查它是否被继续携带。
-
-### 有意接受的取舍
-
-- **保留区只增不减，除了被更晚记录取代的键值片段。** 前次检查点的保留片段默认继续携带；
-  唯一的淘汰是**机械的**：一个片段的所有行都是键值行（`maxTokens: 65536`、`Tests  31 passed (31)`），
-  且每个键在检查点之后都出现了**不同的**新值，就判它过期。淘汰在当轮检查点里留痕一次
-  （`来源：前次检查点（已淘汰 · <键> 已有更新值）`，原文照旧逐字），下一轮不再携带。
-  判据不含模型判断，也不改写原文——淘汰只能整块进行，逐行删改会毁掉「逐字保留」本身。
-  **刻意保守的地方**：片段里只要有一行不是键值行（源码、日志、JSON、散文），就永不淘汰；
-  多词值（`baseline: resnet50 on split-A`）不参与判据；`seed=42` → `seed=421` 这种数字扩展
-  算两个不同的值，不算更新。因此源码、日志这类片段仍只增不减。
-  当摘要预算不足以容纳时，基础引擎的「摘要必须小于被压区段」检查会**报错并拒绝提交**，
-  不会静默删除已保留的原文。**处置**：超长会话最终仍由人工决定淘汰哪些片段（Schema §3）。
-- **被压区段不复用前缀缓存，工具 schema 也不再转发。** 为保证可引用性，区段以带编号的纯文本
-  送入压缩调用，而非原始消息序列，因此这一段不进入前缀缓存；`system` 头仍按原样传递，那部分
-  前缀照常命中。**`tools` 不转发**：基础引擎传它是为了对齐前缀，但压缩模型没有任何正当工具可调，
-  把 schema 递过去等于给它机会跑偏——一次真实 `/compact` 就是这样在 13 秒后以
-  `summarization ended in a tool call` 失败。**处置**：压缩调用本身低频，这是为保真与确定性
-  付出的代价。真实会话实测摘要调用 `cacheReadTokens=6912`。
-
-### 与宿主组件的交互
-
-- **工具结果裁剪器先于压缩器处理大工具结果。** 默认挂载的
-  `dsh-compaction-tool-result-pruner` 把超过 8192 字符的工具结果换成约 4 KB 预览加定位符，
-  而压缩器的输入由会话日志派生，因此**大文件正文在压缩之前就已不在压缩器视野内**
-  （实测：13507 token 的文件读取被裁成单个预览节点）。
-  **处置**：职责划分是——裁剪器负责大工具结果，压缩器负责对话历史。需要正文时回读源文件，
-  不要指望它出现在检查点里。
-
-### 与宿主契约的耦合（宿主升级后需复核）
-
-- **必须满足 `maxTokens ≥ 32768`，且在构造时强制。** 六节摘要显著长于官方模板；实测 8192 下
-  压缩 9/9 全部失败（`summarization truncated at the token cap`）。**处置**：未设置或低于下限时
-  插件抛错、不启动，而不是让一个已知必坏的默认值进入运行时。见上文「配置」。
-- **契约类型是镜像的。** 已装的 `@deepseek-ai/dsh-compaction-basic` 既不从根导出
-  `SummarizationInput` / `SummaryResult`，其 `"./src/*"` 子路径也指向未发布的文件，因此本包镜像了
-  这两个类型，只依赖 `dsh-llm` 的根导出。**处置**：宿主升级后重新核对镜像。
-- **存在 API 漂移。** 当前 `0.2.2-rc.1` 契约中 `SummarizationInput` **没有** `system` 字段
-  （system 头是 `messages[0]`）；按 `0.1.0-rc.6` 旧契约写的镜像带 `system`，对当前运行时不成立。
-- **自带预设是内置 `standard` 的整份拷贝**（另加压缩后端与 `skills/` 两处改动）。这是
-  `dsh-agent-presets` 认可的 shipped 变体做法，代价是**不随 dsh 升级自动更新**。**处置**：升级 dsh 后
-  重新生成 `presets/academic-research/agent.cordis.yml`，别丢掉 `skill-filesystem` 行的
-  `customSkillDirs` 与同目录的 `skills/`。
+- **检查点线性增长，不设上限。** 原话逐字保留、前次检查点整段携带。按一个真实会话复算：区段 1.72M 字符
+  （约 41 万 token）→ 检查点 87k 字符；再叠一轮后 147k 字符。携带部分最终逼近压缩阈值时，基础引擎的
+  「摘要必须小于被压区段」检查会报错，不会静默截断。
+- **助手文字逐字保留，也就逐字保留了它的错误。** 检查点声明助手文字未核实；它是「说过什么」的记录，不是事实。
+- **工具输出不在窗口里。** 需要时按 `seq` 读回或重新读文件；接手的 agent 是否真的去读回，程序管不了。
+- **读回依赖 `dsh-tool-session-query`。** 自带预设已挂载；别的预设要自己挂，否则 `seq` 只能靠人去会话日志里找。
+- **报错而不是猜**：区段为空、区段消息对不上会话可见面、前次检查点缺少本格式的分节时，直接报错，不生成检查点。
 
 ---
 
 ## 开发
 
-编码规则见 [`AGENTS.md`](AGENTS.md)。改动前先读
-[`docs/SUMMARY-SCHEMA.md`](docs/SUMMARY-SCHEMA.md)：产品目标已升级为科研推进工作流（§0.1，分阶段），
-但**压缩引擎只负责压缩**，工作流模板不进入本包（§6.1）。
+编码规则见 [`AGENTS.md`](AGENTS.md)。改动前先读 [`docs/SUMMARY-SCHEMA.md`](docs/SUMMARY-SCHEMA.md)：
+§1 规定检查点保留什么，§2 规定研究状态怎么记；**压缩引擎只负责压缩**。
 
 ```bash
 npm install          # 含 .npmrc：legacy-peer-deps，跳过重型 peer 解析
 npm run typecheck    # tsc -p tsconfig.test.json（含 src 与 test）
-npm test             # vitest run —— 单文件最小测试，34 个用例
+npm test             # vitest run
 npm run build        # 产出 lib/
 ```
 
@@ -441,17 +301,12 @@ cp -R "$(npm root -g)/@deepseek-ai/dsh/node_modules/@deepseek-ai/." node_modules
 ```
 
 > ⚠️ **拷完之后不要再跑 `npm install`。** 这个作用域不在 `package.json` 里，`npm install`
-> 会把它当多余包**清掉**（240 个包只剩 2 个），typecheck 随即全红。要装依赖就先装、再拷。
+> 会把它当多余包**清掉**，typecheck 随即全红。要装依赖就先装、再拷。
 
 源码用 `.ts` 相对导入，靠 TS 5.7+ 的 `rewriteRelativeImportExtensions` 在构建时重写成 `.js`。
 
 > 若 `npm install` 报 `EPERM ... ~/.npm/_cacache`（全局 npm 缓存里有 root 所有的文件），
 > 换一个工作区内的缓存目录即可：`npm install --cache ./.npm-cache --logs-dir ./.npm-logs`。
-
-测试集中在一个文件，覆盖 Schema §6.1 要求的几类：另一种语言的同一用例、
-漏字段、改写数值、引用不存在、裸数字、截断、编号渲染、前次保留片段的继续携带、
-空节 `(none)` 与内部编号不外溢、§2.7 决定条目的标签/状态枚举/依据/Q 引用（表驱动 12 例）、
-提示词与校验共用同一份字段定义。**这些用例只证明选中片段的复制准确性，不证明选择完整或科研语义正确。**
 
 ---
 
@@ -460,5 +315,7 @@ cp -R "$(npm root -g)/@deepseek-ai/dsh/node_modules/@deepseek-ai/." node_modules
 - 运行环境：Node >= 24.9（DSH 0.2.2 的要求）。
 - 针对 `dsh` 的 `@deepseek-ai/dsh-compaction-basic@0.2.2-rc.1`
   （`SummarizationInput` = `{ tools?, messages }`，`publish/` 无 `src/`）开发与类型检查。
+- 前次检查点按 `@deepseek-ai/dsh-compaction/checkpoint` 的 `isCompactCheckpointSource` 识别；区段消息按会话可见面
+  （`session.surface.nodes` + `deriveEventMessage`）映射回 `seq`。宿主升级后复核这两处。
 - 继承官方全部压力 / 保留 / token 计量 / 事务逻辑，只重写 `summarize()` 钩子。
 - License: MIT

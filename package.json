@@ -1,7 +1,7 @@
 {
   "name": "dsh-academic-research",
   "version": "0.1.4",
-  "description": "科研保真上下文压缩后端 for DeepSeek Harness — 六节科研交接记录 + 来源引用逐字复制",
+  "description": "科研保真上下文压缩后端 for DeepSeek Harness — 检查点由程序生成、不调用模型：原话逐字并标明作者，被压掉的工具输出按 seq 读回",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -44,9 +44,6 @@
     "@deepseek-ai/dsh-compaction": "^0.2.2-rc.1",
     "@deepseek-ai/dsh-compaction-basic": "^0.2.2-rc.1",
     "@deepseek-ai/dsh-llm": "^0.2.2-rc.1"
-  },
-  "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.2"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.1.0",

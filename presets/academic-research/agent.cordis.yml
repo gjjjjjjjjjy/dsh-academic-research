@@ -87,6 +87,18 @@
 - id: tool-jobs
   name: '@deepseek-ai/dsh-tool-jobs'
 
+# ── session history ─────────────────────────────────────────────────────────
+
+# The checkpoint this preset's compaction writes keeps the user's and the
+# assistant's words but drops tool output, reasoning and injected context,
+# leaving the seq of each dropped event. `session_event_read` (seq, current
+# session when `session_id` is omitted) is how the agent reads one back. It
+# resolves the host `sessionQuery` service; exact reads work even where the
+# host opens that service with `openAt: never`, which only disables the two
+# full-text search tools.
+- id: tool-session-query
+  name: '@deepseek-ai/dsh-tool-session-query'
+
 # ── skills ──────────────────────────────────────────────────────────────────
 
 # The skill REGISTRY lives in the host composition and is layered per scope:
@@ -167,30 +179,14 @@
   config:
     - id: academic-research
       name: 'dsh-academic-research'
+      # 检查点由程序从会话日志生成，不调用模型；配置只有基础引擎的压力与保留策略。
       config:
-        # 领域包：general | ml | optics
-        domain: ml
-        # 一次调用，不分块。递归分块会把一次压缩变成 N+1 次完整模型调用（每块一次、
-        # 合并再一次），每次实测约 2 分钟：一次真实 /compact 因此跑成 593 秒。
-        # 区段本身有 thresholdRatio 兜底（<= 0.7 x contextWindow = 700000，落在
-        # provider 输入上限 1048576 - maxTokens 之内），官方 compaction-basic 也从不分块。
-        recursive: false
-        summaryLanguage: auto
         # 压力阈值必须落在真实输入上限之内：
         #   thresholdRatio x contextWindow < provider上限 - maxTokens - headroomTokens
-        # 全局默认按 deepseek-flash 标定（headroomTokens 默认 65536）：
+        # 全局默认按 deepseek-flash 标定（maxTokens、headroomTokens 都取基础引擎默认 65536）：
         #   0.7 x 1000000 = 700000 < 1048576 - 65536 - 65536 = 917504
         thresholdRatio: 0.7
         retainRatio: 0.16
-        # 摘要输出上限。下限 32768 是实测的：8192 会把六节摘要截断，触发 fail-closed 的
-        # "summarization truncated at the token cap (incomplete checkpoint)"。
-        # 这里用 65536，因为输出预算要先被 reasoning 吃掉一大块——离线用真实模型复现时，
-        # 一次 input=142769 的调用 out=24273 里有 20344 是 reasoning，正文只剩约 8k 余量；
-        # reasoning 一旦顶满上限，正文就是空的（实测同型失败：reasoning 32698/32768，content 为空）。
-        maxTokens: 65536
-        # 只有把 recursive 重新打开时才有意义。每块都是一整次模型调用，别用默认的 40：
-        # 那正是把一次压缩拆成 4–5 次调用的档位。
-        chunkMessages: 160
         auto: true
 
     - id: command-compact
